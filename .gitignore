@@ -3,3 +3,4 @@ src-tauri/gen/
 *.exe
 .impeccable/
 *.stackdump
+CLAUDE.md
