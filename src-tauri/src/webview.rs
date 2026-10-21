@@ -18,13 +18,6 @@ use tauri::{AppHandle, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
-/// The app's own globals are a fingerprint no real browser has.
-const HIDE_APP_JS: &str = r#"
-try { delete window.__TAURI__; } catch (e) {}
-try { delete window.__TAURI_INTERNALS__; } catch (e) {}
-try { delete window.__TAURI_EVENT_PLUGIN_INTERNALS__; } catch (e) {}
-"#;
-
 const TOKEN_JS: &str = r#"() => {
     const i = document.querySelector('[name="cf-turnstile-response"]');
     return i && i.value ? i.value.length : 0;
@@ -59,7 +52,9 @@ impl WvPage {
             .center()
             .visible(false)
             .data_directory(profile_dir())
-            .initialization_script(HIDE_APP_JS)
+            // No app globals to hide: withGlobalTauri is off, so remote pages see
+            // only Tauri's non-enumerable __TAURI_INTERNALS__, which Tauri defines
+            // as permanent and the ACL makes useless to them (tested: all denied).
             // The file link is all we want; the engine downloads it with ranges.
             .on_navigation(move |u| !t1(u.as_str()))
             .on_download(move |_, ev| match ev {
@@ -200,7 +195,7 @@ pub async fn resolve_fuckingfast(
     let take = {
         let found = found.clone();
         Arc::new(move |u: &str| -> bool {
-            if u.contains("fuckingfast.co/dl/") {
+            if ff::is_dl_link(u) {
                 found.lock().unwrap().get_or_insert(u.to_string());
                 return true;
             }
@@ -260,10 +255,9 @@ pub async fn resolve_datanodes(
     let got = cap.captured.lock().unwrap().clone();
     let result = match (outcome, got) {
         (Err(e), _) => Err(e),
-        (Ok(()), None) => Err(ResolveError::Retry("datanodes never handed over the file link".into())),
+        (Ok(()), None) => Err(cap.miss()),
         (Ok(()), Some(direct)) => {
-            let landing = format!("https://{}/", cap.landing_host);
-            let cookies = page.cookie_header(&[&landing, &direct]).await;
+            let cookies = page.cookie_header(&[&direct]).await;
             Ok(Resolved { url: direct, cookies })
         }
     };

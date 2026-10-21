@@ -2,8 +2,15 @@
 // times a second and patches only what changed.
 "use strict";
 
-const T = window.__TAURI__;
-const invoke = T ? T.core.invoke : mockInvoke;
+// No `window.__TAURI__` global (withGlobalTauri is off, so remote pages in
+// the resolver windows don't see the app's API either). Dialogs, files and
+// window controls are the app's own Rust commands.
+const I = window.__TAURI_INTERNALS__;
+const inApp = !!(I && I.invoke);
+const invoke = inApp ? (cmd, args = {}) => I.invoke(cmd, args) : mockInvoke;
+function listen(event, cb) {
+  return I.invoke("plugin:event|listen", { event, target: { kind: "Any" }, handler: I.transformCallback(cb) });
+}
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -437,6 +444,8 @@ function renderBanners(snap) {
     const what = attn.length === 1 ? `“${esc(attn[0])}”` : `${attn.length} files`;
     $("#attnText").innerHTML = `<b>Captcha needed for ${what}.</b> Tick “Verify you are human” in the browser window and the download continues.`;
   }
+  $("#notice").hidden = !snap.notice;
+  if (snap.notice) $("#noticeText").textContent = snap.notice;
   $("#diskFull").hidden = !snap.diskFull;
   if (snap.diskFull) $("#diskText").innerHTML = `<b>The disk is full.</b> ${esc(snap.diskFull)}. Everything is paused and partial files are kept. Free some space, then resume.`;
 }
@@ -626,9 +635,11 @@ async function rowAction(act, ids) {
 }
 
 async function removeJobs(ids, deletePartial) {
-  if (deletePartial && T) {
-    const ok = await T.dialog.ask(`Remove ${ids.length === 1 ? "this download" : ids.length + " downloads"} and delete the partial file${ids.length === 1 ? "" : "s"}? Finished files are kept.`,
-      { title: "BetterMoonDownloader", kind: "warning", okLabel: "Remove and delete", cancelLabel: "Cancel" });
+  if (deletePartial && inApp) {
+    const ok = await invoke("confirm", {
+      message: `Remove ${ids.length === 1 ? "this download" : ids.length + " downloads"} and delete the partial file${ids.length === 1 ? "" : "s"}? Finished files are kept.`,
+      okLabel: "Remove and delete",
+    });
     if (!ok) return;
   }
   await invoke("remove", { ids, deletePartial });
@@ -698,13 +709,15 @@ $("#moreBtn").addEventListener("click", (e) => {
 });
 
 async function exportLinks() {
-  const links = await invoke("direct_links", { ids: null });
-  if (!links.length) return toast("No direct links resolved yet");
-  if (!T) return copy(links.join("\n"), `${links.length} links copied`);
-  const path = await T.dialog.save({ defaultPath: "direct_links.txt", filters: [{ name: "Text", extensions: ["txt"] }] });
-  if (!path) return;
-  await invoke("write_text_file", { path, text: links.join("\n") + "\n" });
-  toast(`Saved ${links.length} direct link${links.length === 1 ? "" : "s"}`);
+  if (!inApp) {
+    const links = await invoke("direct_links", { ids: null });
+    return links.length ? copy(links.join("\n"), `${links.length} links copied`) : toast("No direct links resolved yet");
+  }
+  // The save dialog runs in Rust; the page never names the file.
+  const n = await invoke("export_links");
+  if (n === null) return;
+  if (n === 0) return toast("No direct links resolved yet");
+  toast(`Saved ${n} direct link${n === 1 ? "" : "s"}`);
 }
 
 // ── toolbar & sidebar ──────────────────────────────────────────────────────
@@ -725,23 +738,24 @@ $("#runBtn").addEventListener("click", async () => {
   await invoke(mode === "pause" ? "pause_all" : "resume_all").catch(toastErr);
   poll();
 });
+$("#noticeDismiss").addEventListener("click", () => invoke("dismiss_notice").then(poll));
 $("#showBrowser").addEventListener("click", () => invoke("show_browser").catch(toastErr));
 $("#diskOpen").addEventListener("click", () => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
 $("#diskResume").addEventListener("click", () => invoke("resume_all").then(poll).catch(toastErr));
 $("#openOut").addEventListener("click", () => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
 
 // Window controls (undecorated window).
-if (T) {
-  const win = T.window.getCurrentWindow();
-  $("#capMin").onclick = () => win.minimize();
-  $("#capMax").onclick = () => win.toggleMaximize();
-  $("#capClose").onclick = () => win.close();
-  const syncMax = async () => {
-    const max = await win.isMaximized();
+if (inApp) {
+  const showMax = (max) => {
     $("#capMax").innerHTML = max ? "&#xE923;" : "&#xE922;";
     $("#capMax").title = max ? "Restore" : "Maximize";
   };
-  win.onResized(syncMax); syncMax();
+  const syncMax = () => invoke("win_is_maximized").then(showMax).catch(() => {});
+  $("#capMin").onclick = () => invoke("win_minimize");
+  $("#capMax").onclick = () => invoke("win_toggle_maximize").then(showMax);
+  $("#capClose").onclick = () => invoke("win_close");
+  addEventListener("resize", syncMax);
+  syncMax();
 } else {
   $(".caption").hidden = true;
 }
@@ -820,18 +834,15 @@ $("#addBtn").addEventListener("click", () => openAdd());
 $("#emptyAdd").addEventListener("click", () => openAdd());
 $("#addCancel").addEventListener("click", () => closeSheet("#addScrim"));
 $("#openTxt").addEventListener("click", async () => {
-  if (!T) return;
-  const picked = await T.dialog.open({ multiple: true, filters: [{ name: "Link lists", extensions: ["txt", "html", "htm", "md", "csv"] }] });
-  if (!picked) return;
-  let text = "";
-  for (const path of [].concat(picked)) {
-    try { text += (await invoke("read_text_file", { path })) + "\n"; } catch (e) { toastErr(e); }
-  }
-  if (text.trim()) openAdd(text);
+  if (!inApp) return;
+  try {
+    const text = await invoke("pick_link_files");
+    if (text && text.trim()) openAdd(text);
+  } catch (e) { toastErr(e); }
 });
 $("#addDirBtn").addEventListener("click", async () => {
-  if (!T) return;
-  const dir = await T.dialog.open({ directory: true, defaultPath: addDir });
+  if (!inApp) return;
+  const dir = await invoke("pick_folder", { current: addDir });
   if (dir) { addDir = dir; $("#addDir").textContent = dir; $("#addDir").title = dir; }
 });
 $("#addSheet").addEventListener("submit", async (e) => {
@@ -866,8 +877,8 @@ function openSettings() {
 $("#openSettings").addEventListener("click", openSettings);
 $("#setCancel").addEventListener("click", () => closeSheet("#setScrim"));
 $("#setDirBtn").addEventListener("click", async () => {
-  if (!T) return;
-  const dir = await T.dialog.open({ directory: true, defaultPath: setDir });
+  if (!inApp) return;
+  const dir = await invoke("pick_folder", { current: setDir });
   if (dir) { setDir = dir; $("#setDir").textContent = dir; $("#setDir").title = dir; }
 });
 $("#setSheet").addEventListener("submit", async (e) => {
@@ -922,19 +933,19 @@ addEventListener("paste", (e) => {
   if (/https?:\/\//.test(text)) { e.preventDefault(); openAdd(text); }
 });
 
-if (T) {
-  T.webview.getCurrentWebview().onDragDropEvent(async (ev) => {
-    const p = ev.payload;
-    if (p.type === "enter" || p.type === "over") $("#drop").hidden = false;
-    else if (p.type === "leave") $("#drop").hidden = true;
-    else if (p.type === "drop") {
-      $("#drop").hidden = true;
-      let text = "";
-      for (const path of p.paths || []) {
-        try { text += (await invoke("read_text_file", { path })) + "\n"; } catch (e) { toastErr(e); }
-      }
+if (inApp) {
+  // Windows' own drop events; the files are read in Rust (link lists only).
+  listen("tauri://drag-enter", () => ($("#drop").hidden = false));
+  listen("tauri://drag-over", () => ($("#drop").hidden = false));
+  listen("tauri://drag-leave", () => ($("#drop").hidden = true));
+  listen("tauri://drag-drop", async (ev) => {
+    $("#drop").hidden = true;
+    const paths = (ev.payload && ev.payload.paths) || [];
+    if (!paths.length) return;
+    try {
+      const text = await invoke("read_dropped_files", { paths });
       if (text.trim()) openAdd(text);
-    }
+    } catch (e) { toastErr(e); }
   });
 }
 

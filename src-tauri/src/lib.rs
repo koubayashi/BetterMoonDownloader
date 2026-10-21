@@ -2,16 +2,19 @@ mod browser;
 mod download;
 mod engine;
 mod extract;
+#[cfg(debug_assertions)]
+mod probe;
 mod settings;
 mod util;
 mod webview;
-mod probe;
 
 use engine::{AddResult, Engine, Snapshot};
 use serde::Serialize;
 use settings::Settings;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 
 type Eng<'a> = State<'a, Arc<Engine>>;
@@ -43,16 +46,94 @@ fn preview_links(text: String) -> engine::Plan {
     engine::plan_links(&text)
 }
 
-/// Text of a dropped or picked link file. Capped so a stray ISO dropped on the
-/// window doesn't get read into memory.
-#[tauri::command]
-fn read_text_file(path: String) -> Result<String, String> {
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-    if meta.len() > 8 * 1024 * 1024 {
-        return Err("That file is too large to be a link list".into());
+// ── files: the UI never names a path it didn't get from a dialog or a drop ──
+
+const LINK_FILE_EXTS: &[&str] = &["txt", "text", "html", "htm", "md", "csv", "log"];
+const LINK_FILE_MAX: u64 = 8 * 1024 * 1024;
+
+/// Text of link-list files. Only text-like extensions, capped in size, so the
+/// command can't be bent into a general file reader.
+fn read_link_files(paths: &[PathBuf]) -> Result<String, String> {
+    let mut text = String::new();
+    for p in paths {
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !LINK_FILE_EXTS.contains(&ext.as_str()) {
+            return Err(format!("{} isn't a link list (.txt, .html, .md or .csv)", display_name(p)));
+        }
+        let meta = std::fs::metadata(p).map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.len() > LINK_FILE_MAX {
+            return Err(format!("{} is too large to be a link list", display_name(p)));
+        }
+        let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
+        text.push_str(&String::from_utf8_lossy(&bytes));
+        text.push('\n');
     }
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    Ok(text)
+}
+
+fn display_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Files dropped on the window (paths come from Windows' drop event).
+#[tauri::command]
+fn read_dropped_files(paths: Vec<PathBuf>) -> Result<String, String> {
+    read_link_files(&paths)
+}
+
+#[tauri::command]
+async fn pick_link_files(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Link lists", LINK_FILE_EXTS)
+        .blocking_pick_files();
+    let Some(files) = picked else { return Ok(None) };
+    let paths: Vec<PathBuf> = files.into_iter().filter_map(|f| f.into_path().ok()).collect();
+    read_link_files(&paths).map(Some)
+}
+
+#[tauri::command]
+async fn pick_folder(app: tauri::AppHandle, current: Option<String>) -> Option<String> {
+    let mut d = app.dialog().file();
+    if let Some(c) = current.filter(|c| Path::new(c).is_dir()) {
+        d = d.set_directory(c);
+    }
+    d.blocking_pick_folder()
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Save resolved direct links. The file is chosen in the save dialog here,
+/// never passed in from the page.
+#[tauri::command]
+async fn export_links(app: tauri::AppHandle, eng: State<'_, Arc<Engine>>) -> Result<Option<usize>, String> {
+    let links = eng.direct_links(None);
+    if links.is_empty() {
+        return Ok(Some(0));
+    }
+    let Some(path) = app
+        .dialog()
+        .file()
+        .set_file_name("direct_links.txt")
+        .add_filter("Text", &["txt"])
+        .blocking_save_file()
+        .and_then(|f| f.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    std::fs::write(&path, links.join("\n") + "\n").map_err(|e| e.to_string())?;
+    Ok(Some(links.len()))
+}
+
+#[tauri::command]
+async fn confirm(app: tauri::AppHandle, message: String, ok_label: String) -> bool {
+    app.dialog()
+        .message(message)
+        .title("BetterMoonDownloader")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(ok_label, "Cancel".into()))
+        .blocking_show()
 }
 
 #[tauri::command]
@@ -91,6 +172,11 @@ fn clear_finished(eng: Eng) {
 }
 
 #[tauri::command]
+fn dismiss_notice(eng: Eng) {
+    eng.dismiss_notice()
+}
+
+#[tauri::command]
 fn get_settings(eng: Eng) -> Settings {
     eng.settings()
 }
@@ -114,13 +200,21 @@ fn reveal(app: tauri::AppHandle, eng: Eng, id: u64) -> Result<(), String> {
     if target.is_dir() {
         app.opener().open_path(target.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
     } else {
+        // Select the file in Explorer; never open (run) it.
         app.opener().reveal_item_in_dir(target).map_err(|e| e.to_string())
     }
 }
 
+/// Open a folder in Explorer. Folders only: `open_path` on a file would run it.
 #[tauri::command]
 fn open_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let _ = std::fs::create_dir_all(&path);
+    let p = Path::new(&path);
+    if !p.exists() {
+        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
+    }
+    if !p.is_dir() {
+        return Err("That isn't a folder".into());
+    }
     app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
@@ -132,11 +226,6 @@ fn direct_links(eng: Eng, ids: Option<Vec<u64>>) -> Vec<String> {
 #[tauri::command]
 fn source_links(eng: Eng, ids: Vec<u64>) -> Vec<String> {
     eng.source_links(&ids)
-}
-
-#[tauri::command]
-fn write_text_file(path: String, text: String) -> Result<(), String> {
-    std::fs::write(path, text).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -154,6 +243,39 @@ fn platform_info(eng: Eng, platform: State<'_, Platform>) -> PlatformInfo {
     }
 }
 
+// ── window controls (the window is undecorated) ─────────────────────────────
+
+fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    app.get_webview_window("main").ok_or_else(|| "no main window".to_string())
+}
+
+#[tauri::command]
+fn win_minimize(app: tauri::AppHandle) -> Result<(), String> {
+    main_window(&app)?.minimize().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn win_toggle_maximize(app: tauri::AppHandle) -> Result<bool, String> {
+    let w = main_window(&app)?;
+    if w.is_maximized().unwrap_or(false) {
+        w.unmaximize().map_err(|e| e.to_string())?;
+        Ok(false)
+    } else {
+        w.maximize().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+fn win_is_maximized(app: tauri::AppHandle) -> bool {
+    main_window(&app).and_then(|w| w.is_maximized().map_err(|e| e.to_string())).unwrap_or(false)
+}
+
+#[tauri::command]
+fn win_close(app: tauri::AppHandle) -> Result<(), String> {
+    main_window(&app)?.close().map_err(|e| e.to_string())
+}
+
 fn apply_theme(app: &tauri::AppHandle, theme: &str) {
     if let Some(w) = app.get_webview_window("main") {
         let t = match theme {
@@ -165,6 +287,13 @@ fn apply_theme(app: &tauri::AppHandle, theme: &str) {
     }
 }
 
+/// The app's own pages only. A link dropped on the window, or anything else
+/// that tries to navigate the main window to the web, is refused.
+fn is_app_url(u: &url::Url) -> bool {
+    matches!(u.scheme(), "tauri")
+        || (matches!(u.scheme(), "http" | "https") && u.host_str() == Some("tauri.localhost"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let engine = Engine::new();
@@ -173,18 +302,30 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(engine.clone())
         .setup(move |app| {
-            let mut mica = false;
-            if let Some(w) = app.get_webview_window("main") {
-                #[cfg(windows)]
-                {
-                    mica = window_vibrancy::apply_mica(&w, None).is_ok();
-                }
-                let _ = w.show();
-            }
+            // Built here rather than in tauri.conf.json so it can carry the
+            // navigation guard.
+            let w = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("BetterMoonDownloader")
+                .inner_size(1180.0, 760.0)
+                .min_inner_size(760.0, 480.0)
+                .decorations(false)
+                .transparent(true)
+                .shadow(true)
+                .visible(false)
+                .center()
+                .on_navigation(is_app_url)
+                .build()?;
+            #[cfg(windows)]
+            let mica = window_vibrancy::apply_mica(&w, None).is_ok();
+            #[cfg(not(windows))]
+            let mica = false;
+            let _ = w.show();
             app.manage(Platform { mica });
             apply_theme(app.handle(), &engine.settings().theme);
             engine.set_app(app.handle().clone());
             engine.spawn_scheduler();
+            // Developer test hook; not compiled into release builds.
+            #[cfg(debug_assertions)]
             if let Ok(links) = std::env::var("BMD_PROBE") {
                 probe::run(app.handle().clone(), engine.clone(), links);
             }
@@ -194,7 +335,11 @@ pub fn run() {
             snapshot,
             add_links,
             preview_links,
-            read_text_file,
+            read_dropped_files,
+            pick_link_files,
+            pick_folder,
+            export_links,
+            confirm,
             pause,
             resume,
             pause_all,
@@ -202,15 +347,19 @@ pub fn run() {
             retry_failed,
             remove,
             clear_finished,
+            dismiss_notice,
             get_settings,
             set_settings,
             reveal,
             open_folder,
             direct_links,
             source_links,
-            write_text_file,
             show_browser,
             platform_info,
+            win_minimize,
+            win_toggle_maximize,
+            win_is_maximized,
+            win_close,
         ])
         .build(tauri::generate_context!())
         .expect("error while building BetterMoonDownloader")
@@ -220,6 +369,19 @@ pub fn run() {
                 tauri::async_runtime::block_on(async move { eng.shutdown().await });
             }
         });
+}
+
+#[cfg(test)]
+mod nav_tests {
+    #[test]
+    fn main_window_stays_on_app_pages() {
+        let ok = |s: &str| super::is_app_url(&s.parse().unwrap());
+        assert!(ok("http://tauri.localhost/index.html"));
+        assert!(ok("tauri://localhost/index.html"));
+        assert!(!ok("https://datanodes.to/abc"));
+        assert!(!ok("https://tauri.localhost.evil.com/"));
+        assert!(!ok("file:///C:/Windows/win.ini"));
+    }
 }
 
 #[cfg(test)]

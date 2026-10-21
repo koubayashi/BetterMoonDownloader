@@ -60,7 +60,27 @@ pub fn file_code(url: &str) -> Option<String> {
 /// True when a request looks like the final file handoff rather than page
 /// chrome. The share URL ends in the filename too, so anything on the landing
 /// host needs an explicit handoff marker, or the first navigation matches itself.
+/// Hosts datanodes actually hands files over from (the site itself and its
+/// `tunnelN.dlproxy.uk` CDN, seen live Oct 2026). Pages run ad scripts that
+/// open pop-ups and redirects; a file-looking URL anywhere else is refused, so
+/// an ad can never put foreign bytes under your filename. If datanodes moves
+/// its CDN, extraction fails with the new host named, rather than trusting it.
+pub const HANDOFF_HOSTS: &[&str] = &["datanodes.to", "dlproxy.uk"];
+
+pub fn host_allowed(host: &str, allowed: &[&str]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    allowed.iter().any(|a| host == *a || host.ends_with(&format!(".{a}")))
+}
+
+/// The file handoff: looks like a file *and* comes over HTTPS from a known host.
 pub fn is_file_url(candidate: &str, landing_host: &str, want_name: Option<&str>, self_urls: &HashSet<String>) -> bool {
+    looks_like_file(candidate, landing_host, want_name, self_urls)
+        && url::Url::parse(candidate)
+            .is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some_and(|h| host_allowed(h, HANDOFF_HOSTS)))
+}
+
+/// Shape only: a URL that looks like the final file rather than page chrome.
+fn looks_like_file(candidate: &str, landing_host: &str, want_name: Option<&str>, self_urls: &HashSet<String>) -> bool {
     if candidate.len() < 40 || self_urls.contains(candidate) {
         return false;
     }
@@ -237,7 +257,7 @@ struct Step2 {
 pub(crate) struct Capture {
     pub captured: Arc<Mutex<Option<String>>>,
     pub take: Arc<dyn Fn(&str) -> bool + Send + Sync>,
-    pub landing_host: String,
+    pub refused: Arc<Mutex<Option<String>>>,
 }
 
 pub(crate) fn capture_for(url: &str) -> Result<Capture, ResolveError> {
@@ -259,8 +279,10 @@ pub(crate) fn capture_for(url: &str) -> Result<Capture, ResolveError> {
     .collect();
 
     let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let refused: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let take = {
         let captured = captured.clone();
+        let refused = refused.clone();
         let lh = landing_host.clone();
         let wn = want_name.clone();
         let su = self_urls.clone();
@@ -273,15 +295,35 @@ pub(crate) fn capture_for(url: &str) -> Result<Capture, ResolveError> {
                 *c = Some(cand.to_string());
                 return true;
             }
+            if looks_like_file(cand, &lh, wn.as_deref(), &su) {
+                // Remember it for the error message; never hand it over.
+                let host = url::Url::parse(cand).ok().and_then(|u| u.host_str().map(str::to_string));
+                refused.lock().unwrap().get_or_insert(host.unwrap_or_else(|| cand.chars().take(60).collect()));
+                // Block it too: a refused file link must not download in the page.
+                return true;
+            }
             false
         })
     };
-    Ok(Capture { captured, take, landing_host })
+    Ok(Capture { captured, take, refused })
+}
+
+impl Capture {
+    /// Why nothing was captured, naming a refused host if there was one.
+    pub fn miss(&self) -> ResolveError {
+        match self.refused.lock().unwrap().clone() {
+            Some(h) => ResolveError::Retry(format!(
+                "datanodes offered the file from an unexpected host ({h}); refused for safety"
+            )),
+            None => ResolveError::Retry("datanodes never handed over the file link".into()),
+        }
+    }
 }
 
 async fn via_browser(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolved, ResolveError> {
     let s = &ctx.settings;
-    let Capture { captured, take, landing_host } = capture_for(url)?;
+    let cap = capture_for(url)?;
+    let (captured, take) = (cap.captured.clone(), cap.take.clone());
     let lane = ctx
         .gate
         .acquire(s.browser_pages, &s.browser_path)
@@ -361,7 +403,7 @@ async fn via_browser(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolve
                 Some(direct) => {
                     let cookies = page
                         .execute(GetCookiesParams {
-                            urls: Some(vec![format!("https://{landing_host}/"), direct.clone()]),
+                            urls: Some(vec![direct.clone()]),
                         })
                         .await
                         .ok()
@@ -376,7 +418,7 @@ async fn via_browser(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolve
                         .filter(|c| !c.is_empty());
                     Ok(Resolved { url: direct, cookies })
                 }
-                None => Err(ResolveError::Retry("datanodes never handed over the file link".into())),
+                None => Err(cap.miss()),
             }
         }
         Err(e) => Err(e),
@@ -520,6 +562,28 @@ pub(crate) async fn flow<P: PageOps>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M1: an ad pop-up or redirect must never be taken as the file.
+    #[test]
+    fn foreign_hosts_are_refused() {
+        let su = HashSet::new();
+        let want = Some("ExampleGame.part1.rar");
+        for evil in [
+            "https://evil.example.com/totally/legit/setup.exe",
+            "https://evil.example.com/ExampleGame.part1.rar.html",
+            "file:///C:/Windows/System32/config/SAM.rar",
+            "http://tunnel5.dlproxy.uk/download/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "https://dlproxy.uk.evil.com/download/AAAAAAAAAAAAAAAAAAAAAAAAAAAA.rar",
+        ] {
+            assert!(!is_file_url(evil, "datanodes.to", want, &su), "{evil}");
+        }
+        assert!(is_file_url(
+            "https://tunnel5.dlproxy.uk/download/SyntheticTokenForTestsOnly0123456789abcd",
+            "datanodes.to",
+            want,
+            &su
+        ));
+    }
 
     #[test]
     fn file_url_detection() {

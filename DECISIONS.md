@@ -88,6 +88,17 @@ The window never needed to be shown, and no captcha click was required in any ru
 
 Test hook: start the app with `BMD_PROBE="<links>"` set. It resolves those links through the built-in browser and writes `%APPDATA%\BetterMoonDownloader\probe.log`.
 
+## 5d. Security hardening (from SECURITY_REVIEW.md)
+
+| # | Decision | Why | Trade-off |
+|---|----------|-----|-----------|
+| X1 | Downloads go to **sparse** files, with an explicit free-space check. All disk writes run on the blocking pool. | Preallocation made NTFS zero-fill, measured at 2.4 s per deep write and twice the disk writes. | Sparse files don't reserve space, so a parallel copy elsewhere could still fill the disk mid-download. The existing disk-full stop handles that. |
+| X2 | The file handoff is **allowlisted by host** (`*.datanodes.to`, `*.dlproxy.uk`, `dl.fuckingfast.co`) and must be HTTPS. | Ad pop-ups and redirects could otherwise put foreign bytes under your filename. | If a host moves its CDN, extraction fails until the list is updated. The error names the new host. |
+| X3 | The UI no longer gets Tauri's JS API (`withGlobalTauri: false`) or any plugin permissions. Dialogs, file reads, exports and window controls are app commands with fixed scopes. | It shrinks what a UI bug could ever reach, and removes visible fingerprints from remote pages. | The UI reaches Tauri through its internal `invoke` / `transformCallback`. These are stable in practice but not public API. |
+| X4 | The main window is created in Rust with a navigation guard. | A dropped web link could otherwise replace the UI with a website. | Window settings moved out of `tauri.conf.json` into `lib.rs`. |
+| X5 | Secrets are sealed with DPAPI, and cookies are never persisted. datanodes links are re-resolved after a restart. | Plain-text secrets in `%APPDATA%`. | A restart costs about 20 s per unfinished datanodes file to get a fresh link. |
+| X6 | A file "already on disk" counts only if its size matches. Anything else is moved aside as `.old`. | Stale partials and unrelated files were trusted. | The share link is resolved first, even for files that turn out complete. |
+
 ## 6. Build and distribution
 
 | # | Decision | Why | Trade-off |

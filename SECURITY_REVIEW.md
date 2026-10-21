@@ -28,6 +28,34 @@ There are **4 issues worth fixing before merging** (1 performance, 3 integrity/d
 
 ---
 
+## Remediation status (re-tested 21 Oct 2026, same branch)
+
+**All 15 findings are fixed.** L5 and L11 are fixed as far as the platform allows; the notes say what remains. Every fix was re-tested after the change.
+
+| ID | Fix | Re-test result |
+|---|---|---|
+| H1 | Files are marked **sparse** before sizing, so there is no zero-fill. Free space is checked up front (`GetDiskFreeSpaceExW`), keeping the early "disk full" stop. All disk writes and the final `fsync` run on the blocking pool. | Write at 3 GiB: **2.38 s → under 1 ms** (`deep_write_into_preallocated_file_is_fast`). Segmented and resumed downloads (10 MB, 34 MB) still match byte for byte. |
+| M1 | The datanodes handoff must be **HTTPS on `*.datanodes.to` or `*.dlproxy.uk`**. File-looking URLs elsewhere are blocked and named in the error. fuckingfast links are parsed (`https://dl.fuckingfast.co/dl/…` only). | `foreign_hosts_are_refused`, `dl_link_is_parsed_not_substring_matched`. Live: real datanodes (19.2 s) and fuckingfast (8.2 s) links still resolve and answer `206`. |
+| M2 | A damaged `queue.json` is kept as `queue.corrupt-<time>.json` and the last good copy (`queue.json.bak`, refreshed at each start) is restored. A banner explains what happened. | `damaged_queue_is_recovered_not_lost`. A v1.1 queue file, including saved cookies, still loads. |
+| M3 | "Already on disk" requires **the exact size the server reports**. A different file in the way is moved to `name.old.ext`, never overwritten or trusted. | Live: second run skipped as already on disk; a foreign file was kept as `file.old.bin` and the real file downloaded. |
+| L1 | Cookies are sent only to the direct link's own host. | Live: datanodes direct links answer `206` **with no cookies at all**, so nothing was lost. |
+| L2 | Text-direction control characters are stripped from filenames. | `Game‮rar.exe` → `Gamerar.exe` |
+| L3 | Device names get a `_` prefix. | `CON` → `_CON`, `nul.rar` → `_nul.rar`, `COM1.part1.rar` → `_COM1.part1.rar` (`Console.rar` untouched) |
+| L4 | Names are capped at 200 UTF-16 units, keeping the extension (`.part07.rar` counts as one). | A 400-character name becomes 200 characters ending `.part07.rar` |
+| L5 | `withGlobalTauri` is off. The UI calls the app through Rust commands. | Live hostile page: visible app globals went **from 3 to 0**. Remaining: Tauri defines `__TAURI_INTERNALS__` as a permanent, hidden property on every page, so it can't be removed. It gives no access: all 6 attack calls are still denied. |
+| L6 | `read_text_file` and `write_text_file` are **removed**. Files come only from Rust-side dialogs or drops, and only link-list types (`.txt/.html/.md/.csv/.log`, ≤ 8 MB) are read. Export writes only where the save dialog says. `open_folder` refuses anything that isn't a folder. The UI has no plugin permissions at all now (`core:event:default` only). | Live, from the real app page: `win.ini` and `hosts` → "isn't a link list"; `open_folder(calc.exe)` → "That isn't a folder"; no Calculator. |
+| L7 | The probe is compiled only into debug builds. | The string `BMD_PROBE` appears **0 times** in the release exe (once in debug). |
+| L8 | "Remove and delete partial" deletes **after** the download task has stopped. | Code path: delete happens in `drop_removed`, after the task's last checkpoint. |
+| L9 | API key and proxy list are **sealed with Windows DPAPI** (`dpapi:` prefix). Session cookies are never written to disk. | `round_trip_and_legacy`: sealed value has no plain text and round-trips; old plain values still load. |
+| L10 | Download redirects: HTTPS only, at most 5 hops, no loopback, private, link-local or `.local` targets. Non-HTTPS direct links are refused. | `redirect_targets` (includes `169.254.169.254`, `[::1]`, `router.local`). |
+| L11 | Can't be removed (it's how an external browser is driven), so it's now opt-in (off by default) and **disclosed in Settings** under the browser path. | — |
+| Gap: link dropped on window | The main window is now created in Rust with a **navigation guard**: only the app's own pages load. | `main_window_stays_on_app_pages`; live: app page allowed (`http://tauri.localhost/ → true`). |
+| Gap: huge lists | Adding links uses hash indexes, so it's linear instead of O(n²). | Mirror and duplicate tests pass. |
+
+**After the fixes:** 14 unit tests pass, plus 3 live tests. `cargo audit`: 0 vulnerabilities. The hostile-page attack was rerun: 6 of 6 denied, no file written, no Calculator. The release exe launches, and the real UI renders with all commands answering.
+
+---
+
 ## What held up (attacks that failed)
 
 | Attack | Result |

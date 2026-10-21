@@ -170,6 +170,141 @@ fn write_at(f: &File, buf: &[u8], off: u64) -> std::io::Result<()> {
     f.write_all_at(buf, off)
 }
 
+/// Disk writes run on the blocking pool: a write can stall for seconds on a
+/// slow or busy disk, and must never hold up the async workers.
+async fn write_off_thread(file: &Arc<File>, buf: Vec<u8>, off: u64) -> (Vec<u8>, std::io::Result<()>) {
+    let f = file.clone();
+    tokio::task::spawn_blocking(move || {
+        let r = write_at(&f, &buf, off);
+        (buf, r)
+    })
+    .await
+    .unwrap_or_else(|e| (Vec::new(), Err(std::io::Error::other(e.to_string()))))
+}
+
+/// Mark the file sparse so a write far into it doesn't make NTFS zero-fill
+/// everything before it (measured: 2.4 s for a write at 3 GiB, and the disk
+/// writes the whole file twice). Fails harmlessly on FAT/exFAT.
+#[cfg(windows)]
+fn make_sparse(f: &File) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    let mut ret = 0u32;
+    // SAFETY: valid open handle, no in/out buffers, synchronous call.
+    unsafe {
+        DeviceIoControl(
+            f.as_raw_handle() as _,
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut ret,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn make_sparse(_f: &File) {}
+
+/// Bytes free for this user on the volume holding `dir`.
+#[cfg(windows)]
+pub fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut avail = 0u64;
+    // SAFETY: NUL-terminated path; the out pointer is valid for the call.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(avail)
+}
+
+#[cfg(not(windows))]
+pub fn free_space(_dir: &Path) -> Option<u64> {
+    None
+}
+
+/// A sparse file reserves nothing, so check up front that the rest fits.
+fn ensure_space(dir: &Path, needed: u64) -> Result<(), DlError> {
+    const MARGIN: u64 = 64 * 1024 * 1024;
+    match free_space(dir) {
+        Some(avail) if avail < needed.saturating_add(MARGIN) => Err(DlError::DiskFull(format!(
+            "{} needs {:.2} GB more, {:.2} GB free",
+            dir.display(),
+            needed as f64 / 1e9,
+            avail as f64 / 1e9
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// `name.old.ext`, `name.old2.ext`, … next to `dest`, for a file that is in
+/// the way and turned out not to be the one we're downloading.
+fn aside_path(dest: &Path) -> PathBuf {
+    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{e}")),
+        None => (name.clone(), String::new()),
+    };
+    for i in 1.. {
+        let tag = if i == 1 { ".old".to_string() } else { format!(".old{i}") };
+        let p = dest.with_file_name(format!("{stem}{tag}{ext}"));
+        if !p.exists() {
+            return p;
+        }
+    }
+    unreachable!()
+}
+
+/// Redirects a download may follow: HTTPS only, at most 5 hops, never to
+/// loopback, private or link-local addresses (no LAN pivots, no downgrades).
+pub fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.error("too many redirects");
+        }
+        if is_public_https(attempt.url()) {
+            attempt.follow()
+        } else {
+            let to = attempt.url().to_string();
+            attempt.error(format!("refused redirect to {to}"))
+        }
+    })
+}
+
+pub fn is_public_https(u: &url::Url) -> bool {
+    use std::net::IpAddr;
+    if u.scheme() != "https" {
+        return false;
+    }
+    match u.host() {
+        Some(url::Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            !(d == "localhost" || [".localhost", ".local", ".internal", ".lan", ".home.arpa"].iter().any(|s| d.ends_with(s)))
+        }
+        Some(url::Host::Ipv4(ip)) => {
+            let ip = IpAddr::V4(ip);
+            !(ip.is_loopback() || ip.is_unspecified() || matches!(ip, IpAddr::V4(v) if v.is_private() || v.is_link_local() || v.is_broadcast()))
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            !(ip.is_loopback() || ip.is_unspecified() || (ip.segments()[0] & 0xfe00) == 0xfc00 || (ip.segments()[0] & 0xffc0) == 0xfe80)
+        }
+        None => false,
+    }
+}
+
+/// How a download ended.
+#[derive(Debug)]
+pub struct Finished {
+    pub size: u64,
+    /// The complete file was already there (same size); nothing was fetched.
+    pub already_on_disk: bool,
+    /// A different file with the same name was moved here first.
+    pub moved_aside: Option<PathBuf>,
+}
+
 fn request(req: &DlRequest, range: Option<(u64, Option<u64>)>) -> reqwest::RequestBuilder {
     let mut b = req
         .client
@@ -219,8 +354,11 @@ fn check_status(resp: &reqwest::Response) -> Result<(), DlError> {
     Ok(())
 }
 
-/// Download `req.url` to `req.dest`. Returns the final size in bytes.
-pub async fn download(req: DlRequest) -> Result<u64, DlError> {
+/// Download `req.url` to `req.dest`.
+pub async fn download(req: DlRequest) -> Result<Finished, DlError> {
+    if !req.url.starts_with("https://") {
+        return Err(DlError::LinkDead("refusing a non-HTTPS download link".into()));
+    }
     let dir = req.dest.parent().map(Path::to_path_buf).unwrap_or_default();
     std::fs::create_dir_all(&dir).map_err(|e| io_err(e, &dir))?;
     let part = part_path(&req.dest);
@@ -246,8 +384,25 @@ pub async fn download(req: DlRequest) -> Result<u64, DlError> {
     };
     drop(probe);
 
+    // A file already sitting at the destination counts as done only when it
+    // is exactly the size the server reports. Anything else is moved aside,
+    // never overwritten and never trusted.
+    let mut moved_aside = None;
+    if req.dest.exists() && !part.exists() {
+        let len = std::fs::metadata(&req.dest).map(|m| m.len()).unwrap_or(0);
+        if total > 0 && len == total {
+            req.progress.total.store(total, Ordering::Relaxed);
+            req.progress.done.store(total, Ordering::Relaxed);
+            return Ok(Finished { size: total, already_on_disk: true, moved_aside: None });
+        }
+        let aside = aside_path(&req.dest);
+        std::fs::rename(&req.dest, &aside).map_err(|e| io_err(e, &dir))?;
+        moved_aside = Some(aside);
+    }
+
     if total == 0 {
-        return sequential(&req, &part, &dir).await;
+        let size = sequential(&req, &part, &dir).await?;
+        return Ok(Finished { size, already_on_disk: false, moved_aside });
     }
     req.progress.total.store(total, Ordering::Relaxed);
 
@@ -259,6 +414,12 @@ pub async fn download(req: DlRequest) -> Result<u64, DlError> {
         .filter(|_| std::fs::metadata(&part).map(|m| m.len() == total).unwrap_or(false))
         .map(|m| m.segments);
 
+    let left: u64 = match &resumed {
+        Some(s) => s.iter().map(|s| s.end.saturating_sub(s.from)).sum(),
+        None => total,
+    };
+    ensure_space(&dir, left)?;
+
     let file = match &resumed {
         Some(_) => OpenOptions::new().write(true).open(&part).map_err(|e| io_err(e, &dir))?,
         None => {
@@ -268,6 +429,7 @@ pub async fn download(req: DlRequest) -> Result<u64, DlError> {
                 .truncate(true)
                 .open(&part)
                 .map_err(|e| io_err(e, &dir))?;
+            make_sparse(&f);
             f.set_len(total).map_err(|e| io_err(e, &dir))?;
             f
         }
@@ -362,11 +524,12 @@ pub async fn download(req: DlRequest) -> Result<u64, DlError> {
     if !complete {
         return Err(DlError::Net("connection closed before the file was complete".into()));
     }
-    let _ = file.sync_all();
+    let f = file.clone();
+    let _ = tokio::task::spawn_blocking(move || f.sync_all()).await;
     drop(file);
     std::fs::rename(&part, &req.dest).map_err(|e| io_err(e, &dir))?;
     let _ = std::fs::remove_file(&meta);
-    Ok(total)
+    Ok(Finished { size: total, already_on_disk: false, moved_aside })
 }
 
 /// Next range for this connection: an unclaimed one, else the back half of the
@@ -433,7 +596,7 @@ async fn worker(
 async fn fetch_segment(
     req: &DlRequest,
     seg: &Arc<Mutex<Seg>>,
-    file: &File,
+    file: &Arc<File>,
     stop: &CancellationToken,
     ranges: bool,
     dir: &Path,
@@ -493,7 +656,7 @@ async fn fetch_segment(
 async fn stream_range(
     req: &DlRequest,
     seg: &Arc<Mutex<Seg>>,
-    file: &File,
+    file: &Arc<File>,
     stop: &CancellationToken,
     range: Option<(u64, Option<u64>)>,
     dir: &Path,
@@ -510,16 +673,25 @@ async fn stream_range(
     let mut buf: Vec<u8> = Vec::with_capacity(WRITE_BUF);
     let mut buf_at = seg.lock().unwrap().pos;
 
-    let flush = |buf: &mut Vec<u8>, buf_at: &mut u64| -> Result<(), DlError> {
+    async fn flush(
+        file: &Arc<File>,
+        seg: &Arc<Mutex<Seg>>,
+        dir: &Path,
+        buf: &mut Vec<u8>,
+        buf_at: &mut u64,
+    ) -> Result<(), DlError> {
         if buf.is_empty() {
             return Ok(());
         }
-        write_at(file, buf, *buf_at).map_err(|e| io_err(e, dir))?;
-        *buf_at += buf.len() as u64;
+        let len = buf.len() as u64;
+        let (mut back, r) = write_off_thread(file, std::mem::take(buf), *buf_at).await;
+        r.map_err(|e| io_err(e, dir))?;
+        *buf_at += len;
         seg.lock().unwrap().flushed = *buf_at;
-        buf.clear();
+        back.clear();
+        *buf = back;
         Ok(())
-    };
+    }
 
     let outcome = loop {
         let next = tokio::select! {
@@ -543,7 +715,7 @@ async fn stream_range(
         buf.extend_from_slice(&chunk[..allowed]);
         req.progress.done.fetch_add(allowed as u64, Ordering::Relaxed);
         if buf.len() >= WRITE_BUF {
-            if let Err(e) = flush(&mut buf, &mut buf_at) {
+            if let Err(e) = flush(file, seg, dir, &mut buf, &mut buf_at).await {
                 break Err(e);
             }
         }
@@ -552,7 +724,7 @@ async fn stream_range(
         }
     };
     // Whatever arrived is valid data: keep it even when the stream failed.
-    flush(&mut buf, &mut buf_at)?;
+    flush(file, seg, dir, &mut buf, &mut buf_at).await?;
     // Bytes reserved but never received go back to the range.
     {
         let mut g = seg.lock().unwrap();
@@ -573,6 +745,7 @@ async fn sequential(req: &DlRequest, part: &Path, dir: &Path) -> Result<u64, DlE
         .truncate(true)
         .open(part)
         .map_err(|e| io_err(e, dir))?;
+    let file = Arc::new(file);
     req.progress.done.store(0, Ordering::Relaxed);
     let seg = Arc::new(Mutex::new(Seg { pos: 0, flushed: 0, end: u64::MAX, claimed: true }));
     req.progress.conns.store(1, Ordering::Relaxed);
@@ -589,6 +762,64 @@ async fn sequential(req: &DlRequest, part: &Path, dir: &Path) -> Result<u64, DlE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M3, live: a complete file is recognised by size; a different file in the
+    /// way is moved aside, not trusted and not overwritten.
+    #[tokio::test]
+    #[ignore]
+    async fn live_existing_file_handling() {
+        let url = std::env::var("BMD_TEST_URL").unwrap_or("https://nodejs.org/dist/v22.11.0/node-v22.11.0-win-x64.zip".into());
+        let dir = std::env::temp_dir().join("bmd-existing");
+        let _ = std::fs::remove_dir_all(&dir);
+        let dest = dir.join("file.bin");
+        let client = reqwest::Client::builder().http1_only().redirect(redirect_policy()).build().unwrap();
+        let mk = || DlRequest {
+            url: url.clone(), cookies: None, dest: dest.clone(), connections: 4, client: client.clone(),
+            progress: Arc::new(Progress::default()), cancel: CancellationToken::new(), limiter: Arc::new(RateLimiter::new()),
+        };
+        let first = download(mk()).await.expect("first download");
+        assert!(!first.already_on_disk);
+        let again = download(mk()).await.expect("second run");
+        assert!(again.already_on_disk, "same size: recognised, not fetched again");
+        std::fs::write(&dest, b"something else entirely").unwrap();
+        let third = download(mk()).await.expect("third run");
+        let aside = third.moved_aside.expect("different file moved aside");
+        assert_eq!(std::fs::read(&aside).unwrap(), b"something else entirely");
+        assert_eq!(std::fs::metadata(&dest).unwrap().len(), third.size);
+        println!("ok: recognised existing file; foreign file kept as {}", aside.display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L10: redirects only to public HTTPS hosts.
+    #[test]
+    fn redirect_targets() {
+        let ok = |s: &str| is_public_https(&s.parse().unwrap());
+        assert!(ok("https://tunnel5.dlproxy.uk/x"));
+        assert!(!ok("http://tunnel5.dlproxy.uk/x"));
+        assert!(!ok("https://192.168.1.1/x"));
+        assert!(!ok("https://127.0.0.1/x"));
+        assert!(!ok("https://[::1]/x"));
+        assert!(!ok("https://localhost/x"));
+        assert!(!ok("https://router.local/x"));
+        assert!(!ok("https://169.254.169.254/latest/meta-data"));
+    }
+
+    /// H1: a write far into a fresh preallocated file must not stall while
+    /// the filesystem zero-fills the gap (it took 2.4 s before sparse files).
+    #[cfg(windows)]
+    #[test]
+    fn deep_write_into_preallocated_file_is_fast() {
+        let p = std::env::temp_dir().join("bmd-sparse-test.bin");
+        let f = OpenOptions::new().create(true).write(true).truncate(true).open(&p).unwrap();
+        make_sparse(&f);
+        f.set_len(4 << 30).unwrap();
+        let t = std::time::Instant::now();
+        write_at(&f, &vec![7u8; 1 << 20], 3 << 30).unwrap();
+        let took = t.elapsed();
+        drop(f);
+        let _ = std::fs::remove_file(&p);
+        assert!(took < Duration::from_millis(300), "deep write took {took:?}");
+    }
 
     /// Live network test: `cargo test --lib live_segmented -- --ignored --nocapture`
     #[tokio::test]
@@ -618,7 +849,7 @@ mod tests {
         });
         let first = download(mk(cancel)).await;
         println!("first attempt: {:?}", first.as_ref().map_err(|e| e.to_string()));
-        let size = download(mk(CancellationToken::new())).await.expect("resume completes");
+        let size = download(mk(CancellationToken::new())).await.expect("resume completes").size;
         let on_disk = std::fs::metadata(&dest).unwrap().len();
         println!("size {size}, on disk {on_disk}");
         assert_eq!(size, on_disk);

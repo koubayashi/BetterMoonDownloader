@@ -36,12 +36,6 @@ pub enum State {
     Failed,
 }
 
-impl State {
-    fn active(self) -> bool {
-        matches!(self, State::Resolving | State::Downloading)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobRecord {
@@ -55,6 +49,8 @@ pub struct JobRecord {
     pub error: Option<String>,
     pub note: Option<String>,
     pub direct: Option<String>,
+    /// In memory only: session cookies never touch the disk.
+    #[serde(skip)]
     pub cookies: Option<String>,
     pub out_dir: String,
     pub added_at: i64,
@@ -119,6 +115,8 @@ struct Job {
     slow_since: Option<Instant>,
     retry_after: Option<Instant>,
     removed: bool,
+    /// Delete the partial file once the task has stopped.
+    purge: bool,
 }
 
 impl Job {
@@ -143,6 +141,7 @@ impl Job {
             slow_since: None,
             retry_after: None,
             removed: false,
+            purge: false,
         }
     }
 }
@@ -181,6 +180,7 @@ struct Inner {
     next_id: u64,
     dirty: bool,
     disk_full: Option<String>,
+    notice: Option<String>,
     history: VecDeque<f64>,
     log: VecDeque<LogLine>,
     log_seq: u64,
@@ -248,6 +248,7 @@ pub struct Snapshot {
     history: Vec<f64>,
     attention: Vec<String>,
     disk_full: Option<String>,
+    notice: Option<String>,
     browser_open: bool,
     log: Vec<LogLine>,
     log_seq: u64,
@@ -322,6 +323,7 @@ fn build_clients(proxies: &str) -> Vec<reqwest::Client> {
             // HTTP/2 would multiplex every segment onto one TCP connection and
             // defeat the point of segmenting.
             .http1_only()
+            .redirect(download::redirect_policy())
             .connect_timeout(Duration::from_secs(20))
             .read_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(32)
@@ -370,6 +372,44 @@ fn queue_path() -> PathBuf {
     settings::data_dir().join("queue.json")
 }
 
+/// Load the queue without ever losing it silently. A file that won't parse
+/// is kept as `queue.corrupt-<time>.json`, and the last good copy
+/// (`queue.json.bak`, written at every start) is used instead.
+fn load_queue() -> (Vec<JobRecord>, Option<String>) {
+    load_queue_at(&queue_path())
+}
+
+fn load_queue_at(path: &std::path::Path) -> (Vec<JobRecord>, Option<String>) {
+    let path = path.to_path_buf();
+    let bak = path.with_extension("json.bak");
+    let parse = |p: &std::path::Path| -> Option<Option<Vec<JobRecord>>> {
+        let bytes = std::fs::read(p).ok()?; // None: no file
+        Some(serde_json::from_slice::<Vec<JobRecord>>(&bytes).ok()) // Some(None): unreadable
+    };
+    match parse(&path) {
+        None => (Vec::new(), None),
+        Some(Some(list)) => {
+            let _ = std::fs::copy(&path, &bak);
+            (list, None)
+        }
+        Some(None) => {
+            let kept = path.with_file_name(format!("queue.corrupt-{}.json", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
+            let _ = std::fs::rename(&path, &kept);
+            let kept_name = kept.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match parse(&bak) {
+                Some(Some(list)) => (
+                    list,
+                    Some(format!("The download list was damaged. Restored the last good copy; the damaged file was kept as {kept_name}.")),
+                ),
+                _ => (
+                    Vec::new(),
+                    Some(format!("The download list was damaged and couldn't be restored. It was kept as {kept_name}; partial files are still on disk.")),
+                ),
+            }
+        }
+    }
+}
+
 impl Engine {
     pub fn new() -> Arc<Self> {
         let s = settings::load();
@@ -377,15 +417,18 @@ impl Engine {
         let limiter = Arc::new(RateLimiter::new());
         limiter.set_mbs(s.speed_limit_mbs);
 
-        let mut jobs: Vec<Job> = std::fs::read(queue_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Vec<JobRecord>>(&b).ok())
-            .unwrap_or_default()
+        let (records, notice) = load_queue();
+        let mut jobs: Vec<Job> = records
             .into_iter()
             .map(|mut r| {
                 // Anything mid-flight when the app closed picks up where it was.
                 if matches!(r.state, State::Resolving | State::Downloading | State::Ready) {
                     r.state = State::Queued;
+                }
+                // Cookies are never saved, and datanodes links don't work
+                // without them: get a fresh link after a restart.
+                if r.host == Host::Datanodes {
+                    r.direct = None;
                 }
                 Job::new(r)
             })
@@ -400,6 +443,7 @@ impl Engine {
                 next_id,
                 dirty: false,
                 disk_full: None,
+                notice,
                 history: VecDeque::with_capacity(HISTORY_CAP),
                 log: VecDeque::new(),
                 log_seq: 0,
@@ -456,8 +500,17 @@ impl Engine {
         let mut res = AddResult { added: 0, duplicates: 0, unsupported: 0, mirrors: 0, groups: vec![] };
         {
             let mut g = self.inner.lock().unwrap();
+            // Indexes, so adding tens of thousands of links stays linear.
+            let mut known: std::collections::HashSet<String> =
+                g.jobs.iter().flat_map(|j| j.rec.sources.iter().cloned()).collect();
+            let mut by_name: std::collections::HashMap<(String, String, String), usize> = g
+                .jobs
+                .iter()
+                .enumerate()
+                .map(|(i, j)| ((j.rec.name.clone(), j.rec.out_dir.clone(), j.rec.subfolder.clone()), i))
+                .collect();
             for url in links {
-                if g.jobs.iter().any(|j| j.rec.sources.contains(&url)) {
+                if !known.insert(url.clone()) {
                     res.duplicates += 1;
                     continue;
                 }
@@ -474,11 +527,8 @@ impl Engine {
                 }
 
                 // The same part from another host is a mirror, not a new file.
-                if let Some(j) = g
-                    .jobs
-                    .iter_mut()
-                    .find(|j| j.rec.name == name && j.rec.out_dir == out && j.rec.subfolder == subfolder)
-                {
+                let key = (name.clone(), out.clone(), subfolder.clone());
+                if let Some(j) = by_name.get(&key).copied().map(|i| &mut g.jobs[i]) {
                     j.rec.sources.push(url.clone());
                     // fuckingfast usually resolves over plain HTTPS in under a
                     // second; datanodes needs the browser. Prefer it while nothing
@@ -496,6 +546,7 @@ impl Engine {
                     continue;
                 }
 
+                by_name.insert(key, g.jobs.len());
                 let id = g.next_id;
                 g.next_id += 1;
                 g.jobs.push(Job::new(JobRecord {
@@ -599,26 +650,25 @@ impl Engine {
 
     /// Remove jobs from the list; optionally delete partial downloads.
     pub fn remove(&self, ids: &[u64], delete_partial: bool) {
-        let mut g = self.inner.lock().unwrap();
-        for j in g.jobs.iter_mut().filter(|j| ids.contains(&j.rec.id)) {
-            j.removed = true;
-            if j.rec.state.active() {
-                j.reason = Some(Reason::Remove);
+        {
+            let mut g = self.inner.lock().unwrap();
+            for j in g.jobs.iter_mut().filter(|j| ids.contains(&j.rec.id)) {
+                j.removed = true;
+                // Deleting now would race the running task, which writes its
+                // checkpoint once more as it stops. Delete when it's gone.
+                j.purge = delete_partial && j.rec.state != State::Done;
                 if let Some(c) = &j.cancel {
+                    j.reason = Some(Reason::Remove);
                     c.cancel();
                 }
             }
-            if delete_partial && j.rec.state != State::Done {
-                let dest = j.rec.dest();
-                let part = download::part_path(&dest);
-                let _ = std::fs::remove_file(&part);
-                let mut m = part.into_os_string();
-                m.push(".json");
-                let _ = std::fs::remove_file(m);
-            }
+            g.dirty = true;
         }
-        g.jobs.retain(|j| !ids.contains(&j.rec.id) || j.rec.state.active());
-        g.dirty = true;
+        self.drop_removed();
+    }
+
+    pub fn dismiss_notice(&self) {
+        self.inner.lock().unwrap().notice = None;
     }
 
     pub fn clear_finished(&self) {
@@ -721,6 +771,7 @@ impl Engine {
             history: g.history.iter().copied().collect(),
             attention: self.attention.list(),
             disk_full: g.disk_full.clone(),
+            notice: g.notice.clone(),
             browser_open: self.gate.is_open(),
             log: g.log.iter().filter(|l| l.seq > log_after).cloned().collect(),
             log_seq: g.log_seq,
@@ -971,7 +1022,21 @@ impl Engine {
 
     /// A removed job stays listed only until its task has wound down.
     fn drop_removed(&self) {
-        self.inner.lock().unwrap().jobs.retain(|j| !j.removed || j.cancel.is_some());
+        let mut purge: Vec<PathBuf> = Vec::new();
+        self.inner.lock().unwrap().jobs.retain(|j| {
+            let gone = j.removed && j.cancel.is_none();
+            if gone && j.purge {
+                purge.push(j.rec.dest());
+            }
+            !gone
+        });
+        for dest in purge {
+            let part = download::part_path(&dest);
+            let _ = std::fs::remove_file(&part);
+            let mut m = part.into_os_string();
+            m.push(".json");
+            let _ = std::fs::remove_file(m);
+        }
     }
 
     fn start_download(self: &Arc<Self>, id: u64, s: Settings) {
@@ -997,20 +1062,6 @@ impl Engine {
             return;
         };
 
-        // Already on disk from an earlier run: nothing to fetch.
-        if dest.exists() && !download::part_path(&dest).exists() {
-            let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-            progress.total.store(size, Ordering::Relaxed);
-            progress.done.store(size, Ordering::Relaxed);
-            self.with_job(id, |j| {
-                j.cancel = None;
-                j.rec.state = State::Done;
-                j.rec.note = Some("Already on disk".into());
-                j.rec.finished_at = Some(util::now_ms());
-            });
-            return;
-        }
-
         let me = self.clone();
         let limiter = self.limiter.clone();
         tauri::async_runtime::spawn(async move {
@@ -1032,13 +1083,25 @@ impl Engine {
                 j.dl_started = None;
                 let reason = j.reason.take();
                 match res {
-                    Ok(size) => {
+                    Ok(fin) => {
                         j.rec.state = State::Done;
-                        j.rec.total = size;
-                        j.rec.done = size;
+                        j.rec.total = fin.size;
+                        j.rec.done = fin.size;
                         j.rec.finished_at = Some(util::now_ms());
                         j.rec.error = None;
-                        msg = Some(("ok", format!("Saved {}", j.rec.name)));
+                        if fin.already_on_disk {
+                            j.rec.note = Some("Already on disk".into());
+                            msg = Some(("ok", format!("{} is already on disk (same size), skipped", j.rec.name)));
+                        } else {
+                            msg = Some(("ok", format!("Saved {}", j.rec.name)));
+                        }
+                        if let Some(old) = &fin.moved_aside {
+                            let old = old.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            msg = Some(("warn", format!(
+                                "{}: a different file with this name was in the way; it was kept as {old}",
+                                j.rec.name
+                            )));
+                        }
                     }
                     Err(DlError::Cancelled) => match reason {
                         Some(Reason::Stall) => {
@@ -1111,6 +1174,30 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    /// M2: a damaged queue file is kept, the last good copy is restored.
+    #[test]
+    fn damaged_queue_is_recovered_not_lost() {
+        let dir = std::env::temp_dir().join(format!("bmd-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let q = dir.join("queue.json");
+        let good = r#"[{"id":1,"url":"https://fuckingfast.co/abcdef12#a.rar","name":"a.rar","host":"fuckingfast","state":"queued","total":0,"done":0,"error":null,"note":null,"direct":null,"cookies":"session=old","outDir":"C:/x","addedAt":0,"finishedAt":null}]"#;
+        std::fs::write(&q, good).unwrap();
+        let (list, notice) = super::load_queue_at(&q);
+        assert_eq!(list.len(), 1);
+        assert!(notice.is_none());
+        assert!(dir.join("queue.json.bak").exists(), "good load keeps a backup");
+
+        std::fs::write(&q, b"{ this is not json").unwrap();
+        let (list, notice) = super::load_queue_at(&q);
+        assert_eq!(list.len(), 1, "restored from the backup");
+        assert!(notice.unwrap().contains("Restored"));
+        let kept = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("queue.corrupt-"));
+        assert!(kept, "the damaged file is kept for inspection");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn mirrors_collapse_into_one_release() {
         let text = "##Download links

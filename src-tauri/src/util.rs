@@ -68,22 +68,54 @@ pub fn filename_for(url: &str) -> String {
     sanitize_filename(if decoded.is_empty() { "download" } else { &decoded })
 }
 
-/// Strip characters Windows rejects in filenames, and trailing dots/spaces.
+/// Longest name we produce, in UTF-16 units. NTFS allows 255; this leaves room
+/// for `.bmdpart.json` and an `.old2` tag.
+const MAX_NAME: usize = 200;
+
+/// Text-direction controls (e.g. U+202E) let `Game<U+202E>rar.exe` display as `Gameexe.rar`.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// A name Windows (and Explorer) will treat as an ordinary file: no reserved
+/// characters, no direction tricks, no device names, no over-long names.
 pub fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
+        .filter(|c| !is_bidi_control(*c))
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
             c if (c as u32) < 0x20 => '_',
             c => c,
         })
         .collect();
-    let trimmed = cleaned.trim_matches(|c| c == '.' || c == ' ').to_string();
-    if trimmed.is_empty() {
-        "download".into()
-    } else {
-        trimmed
+    let mut s = cleaned.trim_matches(|c| c == '.' || c == ' ').to_string();
+    if s.is_empty() {
+        s = "download".into();
     }
+
+    // CON, NUL.rar, COM1.part1.rar, …: created through \\?\ paths but
+    // unopenable and undeletable in Explorer and most tools.
+    let stem = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.chars().count() == 4
+            && stem.chars().nth(3).is_some_and(|d| d.is_ascii_digit() || "¹²³".contains(d)));
+    if reserved {
+        s.insert(0, '_');
+    }
+
+    // Shorten the stem, never the extension (`.part01.rar` counts as one).
+    if s.encode_utf16().count() > MAX_NAME {
+        let ext_re = regex::Regex::new(r"(?i)(\.part\d+)?\.[a-z0-9]{1,8}$").unwrap();
+        let ext = ext_re.find(&s).map(|m| m.as_str().to_string()).unwrap_or_default();
+        let mut stem: String = s[..s.len() - ext.len()].to_string();
+        while stem.encode_utf16().count() + ext.encode_utf16().count() > MAX_NAME {
+            stem.pop();
+        }
+        s = format!("{}{ext}", stem.trim_end_matches(['.', ' ']));
+    }
+    s
 }
 
 /// The release a part belongs to, used as the group and its subfolder name.
@@ -161,6 +193,24 @@ mod tests {
             "My Game.part02.rar"
         );
         assert_eq!(sanitize_filename("a:b?.rar. "), "a_b_.rar");
+    }
+
+    #[test]
+    fn hostile_filenames_are_neutralised() {
+        // L2: direction override would show "rar.exe" as "exe.rar".
+        assert_eq!(sanitize_filename("Game\u{202E}rar.exe"), "Gamerar.exe");
+        // L3: device names.
+        assert_eq!(sanitize_filename("CON"), "_CON");
+        assert_eq!(sanitize_filename("nul.rar"), "_nul.rar");
+        assert_eq!(sanitize_filename("COM1.part1.rar"), "_COM1.part1.rar");
+        assert_eq!(sanitize_filename("Console.rar"), "Console.rar");
+        // L4: long names keep their extension and fit NTFS.
+        let long = sanitize_filename(&format!("{}.part07.rar", "A".repeat(400)));
+        assert!(long.encode_utf16().count() <= 200, "{}", long.len());
+        assert!(long.ends_with(".part07.rar"));
+        // Traversal and streams stay neutralised.
+        assert_eq!(sanitize_filename("../../Windows/evil.dll"), "_.._Windows_evil.dll");
+        assert_eq!(sanitize_filename("file.rar:hidden"), "file.rar_hidden");
     }
 
     #[test]

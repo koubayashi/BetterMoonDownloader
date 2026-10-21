@@ -116,19 +116,97 @@ pub fn browser_profile_dir() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    std::fs::read(data_dir().join("settings.json"))
+    let mut s = std::fs::read(data_dir().join("settings.json"))
         .ok()
         .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
-        .unwrap_or_default()
-        .clamped()
+        .unwrap_or_default();
+    s.dn_api_key = secret::open(&s.dn_api_key);
+    s.proxies = secret::open(&s.proxies);
+    s.clamped()
 }
 
+/// Secrets (API key, proxy passwords) are sealed with Windows DPAPI: only
+/// this Windows account can read them back, not other programs scanning
+/// `%APPDATA%` files or a copy of the file on another machine.
 pub fn save(s: &Settings) {
-    if let Ok(b) = serde_json::to_vec_pretty(s) {
+    let mut on_disk = s.clone();
+    on_disk.dn_api_key = secret::seal(&s.dn_api_key);
+    on_disk.proxies = secret::seal(&s.proxies);
+    if let Ok(b) = serde_json::to_vec_pretty(&on_disk) {
         let path = data_dir().join("settings.json");
         let tmp = path.with_extension("json.tmp");
         if std::fs::write(&tmp, b).is_ok() {
             let _ = std::fs::rename(tmp, path);
+        }
+    }
+}
+
+mod secret {
+    const PREFIX: &str = "dpapi:";
+
+    pub fn seal(plain: &str) -> String {
+        if plain.is_empty() {
+            return String::new();
+        }
+        match protect(plain.as_bytes(), true) {
+            Some(blob) => format!("{PREFIX}{}", blob.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            None => plain.to_string(),
+        }
+    }
+
+    /// Values saved by older versions are plain text and pass straight through.
+    pub fn open(stored: &str) -> String {
+        let Some(hex) = stored.strip_prefix(PREFIX) else { return stored.to_string() };
+        let bytes: Option<Vec<u8>> = (0..hex.len())
+            .step_by(2)
+            .map(|i| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+            .collect();
+        bytes
+            .and_then(|b| protect(&b, false))
+            .and_then(|p| String::from_utf8(p).ok())
+            .unwrap_or_default()
+    }
+
+    #[cfg(windows)]
+    fn protect(data: &[u8], seal: bool) -> Option<Vec<u8>> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Cryptography::{
+            CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        };
+        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+        let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        // SAFETY: input points at `data` for the call; DPAPI allocates `out`,
+        // which is copied and then released with LocalFree.
+        unsafe {
+            let ok = if seal {
+                CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+            } else {
+                CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+            };
+            if ok == 0 || out.pbData.is_null() {
+                return None;
+            }
+            let v = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+            LocalFree(out.pbData as _);
+            Some(v)
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn protect(_data: &[u8], _seal: bool) -> Option<Vec<u8>> {
+        None
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn round_trip_and_legacy() {
+            let sealed = super::seal("key-123:proxy-pass");
+            assert!(sealed.starts_with("dpapi:"), "{sealed}");
+            assert!(!sealed.contains("key-123"));
+            assert_eq!(super::open(&sealed), "key-123:proxy-pass");
+            assert_eq!(super::open("plain-old-value"), "plain-old-value");
+            assert_eq!(super::seal(""), "");
         }
     }
 }

@@ -106,6 +106,11 @@
         <p id="attnText"></p>
         <button class="btn btn-primary btn-sm" id="showBrowser">Show browser</button>
       </div>
+      <div class="banner banner-danger" id="notice" hidden>
+        <svg><use href="#i-alert"/></svg>
+        <p id="noticeText"></p>
+        <button class="btn btn-sm" id="noticeDismiss">Dismiss</button>
+      </div>
       <div class="banner banner-danger" id="diskFull" hidden>
         <svg><use href="#i-alert"/></svg>
         <p id="diskText"></p>
@@ -198,7 +203,7 @@
           <label class="field"><span>Retries per link</span><input type="number" min="0" max="10" name="retries"></label>
           <label class="field"><span>Browser tabs</span><input type="number" min="1" max="8" name="browserPages"><small>Tabs open at once in the one shared browser window. Separate windows make Cloudflare suspicious.</small></label>
           <label class="field"><span>Captcha wait</span><input type="number" min="0" max="1800" name="captchaWait"><small>Seconds to wait for you to tick “Verify you are human”.</small></label>
-          <label class="field"><span>Browser</span><input type="text" name="browserPath" placeholder="Detecting…"><small id="browserHint">Only used when the built-in browser is off. Chrome is preferred; Edge works too. Leave empty to detect.</small></label>
+          <label class="field"><span>Browser</span><input type="text" name="browserPath" placeholder="Detecting…"><small id="browserHint">Only used when the built-in browser is off. While it runs, that browser accepts remote control from programs on this PC, which is how the app drives it. Leave empty to detect Chrome or Edge.</small></label>
           <label class="field"><span>datanodes API key</span><input type="password" name="dnApiKey" placeholder="Optional, premium only"><small>With a premium key, datanodes links skip the browser entirely.</small></label>
           <label class="field field-block"><span>Proxies</span><textarea name="proxies" rows="3" placeholder="One per line: ip:port, ip:port:user:pass, socks5://host:port"></textarea><small>Downloads rotate through these. Leave empty for a direct connection.</small></label>
         </section>

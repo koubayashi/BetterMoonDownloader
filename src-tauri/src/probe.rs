@@ -21,6 +21,50 @@ pub fn run(app: tauri::AppHandle, engine: Arc<Engine>, links: String) {
             settings: engine.settings(),
             app: Some(app.clone()),
         };
+        if links == "ui" {
+            // Ask the real app page what it rendered, and run the new commands
+            // through the same `invoke` path its buttons use.
+            use tauri::Manager;
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            let Some(main) = app.get_webview_window("main") else {
+                w("no main window".into());
+                w("DONE".into());
+                return;
+            };
+            let js = r#"(function(){
+              window.__ui = {};
+              const I = window.__TAURI_INTERNALS__;
+              const q = (s) => document.querySelector(s);
+              Object.assign(window.__ui, {
+                inApp: !!(I && I.invoke), tauriGlobal: typeof window.__TAURI__,
+                appVisible: !!q('.app') && getComputedStyle(q('.app')).display !== 'none',
+                css: getComputedStyle(document.body).fontFamily.slice(0, 30),
+                rows: document.querySelectorAll('.row, .group').length,
+                title: q('#viewTitle')?.textContent, saveTo: q('#outLabel')?.textContent,
+                summary: q('#summary')?.hidden ? 'hidden' : (q('#sumLine1')?.textContent || ''),
+              });
+              const calls = [['win_is_maximized', {}], ['get_settings', {}], ['preview_links', {text: 'https://fuckingfast.co/abcdef12#X.part1.rar https://datanodes.to/abcd1234efgh/X.part1.rar'}],
+                             ['read_dropped_files', {paths: ['C:\\Windows\\win.ini']}], ['read_dropped_files', {paths: ['C:\\Windows\\System32\\drivers\\etc\\hosts']}],
+                             ['open_folder', {path: 'C:\\Windows\\System32\\calc.exe'}]];
+              for (const [c, a] of calls) I.invoke(c, a)
+                .then(v => window.__ui[c + JSON.stringify(a).slice(0, 40)] = 'ok ' + JSON.stringify(v).slice(0, 90))
+                .catch(e => window.__ui[c + JSON.stringify(a).slice(0, 40)] = 'err ' + String(e).slice(0, 90));
+              return 'started';
+            })()"#;
+            let _ = main.eval(js);
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+            let tx = std::sync::Mutex::new(Some(tx));
+            let _ = main.eval_with_callback("JSON.stringify(window.__ui)", move |s| {
+                if let Some(t) = tx.lock().unwrap().take() {
+                    let _ = t.send(s);
+                }
+            });
+            let r = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await;
+            w(format!("ui: {}", r.ok().and_then(|r| r.ok()).unwrap_or_else(|| "no answer".into())));
+            w("DONE".into());
+            return;
+        }
         if links == "ipc" {
             // Play a hostile page: can a remote document in a resolver window
             // reach the app's commands?

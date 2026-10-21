@@ -27,6 +27,16 @@ pub fn file_id(url: &str) -> Option<String> {
     segs.into_iter().rev().find(|s| re.is_match(s))
 }
 
+/// The direct link: HTTPS, on fuckingfast's own hosts, under `/dl/`. Parsed,
+/// not substring-matched: `evil.com/?r=fuckingfast.co/dl/x` must not pass.
+pub fn is_dl_link(u: &str) -> bool {
+    url::Url::parse(u).is_ok_and(|p| {
+        p.scheme() == "https"
+            && matches!(p.host_str(), Some("fuckingfast.co" | "dl.fuckingfast.co"))
+            && p.path().starts_with("/dl/")
+    })
+}
+
 pub async fn resolve(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolved, ResolveError> {
     let id = file_id(url).ok_or_else(|| ResolveError::Dead("Couldn't read a file id from the link".into()))?;
 
@@ -66,7 +76,7 @@ async fn http_go(ctx: &ExtractCtx, id: &str) -> Result<String, HttpOutcome> {
         .map_err(|_| HttpOutcome::NeedsBrowser)?;
     let status = resp.status().as_u16();
     if let Some(t) = resp.headers().get("hx-redirect").and_then(|v| v.to_str().ok()) {
-        if t.contains("/dl/") {
+        if is_dl_link(t.trim()) {
             return Ok(t.trim().to_string());
         }
     }
@@ -130,7 +140,7 @@ async fn browser_go(ctx: &ExtractCtx, id: &str, label: &str) -> Result<Resolved,
                 if let Some(obj) = e.response.headers.inner().as_object() {
                     for (k, v) in obj {
                         if k.eq_ignore_ascii_case("hx-redirect") {
-                            if let Some(t) = v.as_str().filter(|t| t.contains("/dl/")) {
+                            if let Some(t) = v.as_str().filter(|t| is_dl_link(t.trim())) {
                                 f.lock().unwrap().get_or_insert(t.trim().to_string());
                             }
                         }
@@ -144,7 +154,7 @@ async fn browser_go(ctx: &ExtractCtx, id: &str, label: &str) -> Result<Resolved,
         let p = page.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(e) = ev.next().await {
-                if e.request.url.contains("/dl/") {
+                if is_dl_link(&e.request.url) {
                     f.lock().unwrap().get_or_insert(e.request.url.clone());
                 }
                 let _ = p
@@ -217,6 +227,14 @@ async fn browser_go(ctx: &ExtractCtx, id: &str, label: &str) -> Result<Resolved,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dl_link_is_parsed_not_substring_matched() {
+        assert!(super::is_dl_link("https://dl.fuckingfast.co/dl/SyntheticTokenForTestsOnly_0123"));
+        assert!(!super::is_dl_link("https://evil.example.com/?r=fuckingfast.co/dl/AAAA"));
+        assert!(!super::is_dl_link("http://dl.fuckingfast.co/dl/AAAA"));
+        assert!(!super::is_dl_link("https://dl.fuckingfast.co.evil.com/dl/AAAA"));
+    }
+
     #[test]
     fn id_ignores_fragment() {
         assert_eq!(
