@@ -134,7 +134,8 @@ fn shutdown_live(mut live: Live) {
     }
 }
 
-/// A real Chrome first, Edge second (always present on Windows 11).
+/// A real Chrome first, Edge second (always present on Windows 11), then
+/// Chromium on Linux.
 pub fn find_browser(exe_override: &str) -> Option<PathBuf> {
     if !exe_override.is_empty() && Path::new(exe_override).exists() {
         return Some(PathBuf::from(exe_override));
@@ -156,7 +157,12 @@ pub fn find_browser(exe_override: &str) -> Option<PathBuf> {
             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
             "/usr/bin/google-chrome",
             "/usr/bin/google-chrome-stable",
+            "/opt/google/chrome/chrome",
             "/usr/bin/microsoft-edge",
+            "/usr/bin/microsoft-edge-stable",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
         ]
         .map(PathBuf::from),
     );

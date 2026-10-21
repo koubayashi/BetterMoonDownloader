@@ -26,7 +26,7 @@ Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
 
 Push-Location (Join-Path $root "src-tauri")
 try {
-    npx --yes @tauri-apps/cli@2 build
+    npx --yes @tauri-apps/cli@2 build --bundles nsis
     if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
 } finally {
     Pop-Location

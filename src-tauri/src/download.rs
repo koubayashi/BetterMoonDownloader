@@ -221,7 +221,18 @@ pub fn free_space(dir: &Path) -> Option<u64> {
     (ok != 0).then_some(avail)
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: NUL-terminated path; `st` is valid for the call.
+    let ok = unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0;
+    // f_bavail: blocks free to unprivileged users, like Windows' "available".
+    ok.then(|| st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+#[cfg(not(any(windows, unix)))]
 pub fn free_space(_dir: &Path) -> Option<u64> {
     None
 }

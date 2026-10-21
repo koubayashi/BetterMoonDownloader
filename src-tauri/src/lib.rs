@@ -21,12 +21,14 @@ type Eng<'a> = State<'a, Arc<Engine>>;
 
 struct Platform {
     mica: bool,
+    native_frame: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlatformInfo {
     mica: bool,
+    native_frame: bool,
     version: &'static str,
     browser: Option<String>,
 }
@@ -238,6 +240,7 @@ async fn show_browser(eng: State<'_, Arc<Engine>>) -> Result<(), String> {
 fn platform_info(eng: Eng, platform: State<'_, Platform>) -> PlatformInfo {
     PlatformInfo {
         mica: platform.mica,
+        native_frame: platform.native_frame,
         version: env!("CARGO_PKG_VERSION"),
         browser: browser::find_browser(&eng.settings().browser_path).map(|p| p.display().to_string()),
     }
@@ -303,13 +306,16 @@ pub fn run() {
         .manage(engine.clone())
         .setup(move |app| {
             // Built here rather than in tauri.conf.json so it can carry the
-            // navigation guard.
+            // navigation guard. Linux keeps the system title bar: borderless,
+            // transparent windows lose their resize edges on GNOME/Wayland and
+            // render unreliably on WebKitGTK.
+            let native_frame = cfg!(target_os = "linux");
             let w = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("BetterMoonDownloader")
                 .inner_size(1180.0, 760.0)
                 .min_inner_size(760.0, 480.0)
-                .decorations(false)
-                .transparent(true)
+                .decorations(native_frame)
+                .transparent(!native_frame)
                 .shadow(true)
                 .visible(false)
                 .center()
@@ -320,7 +326,7 @@ pub fn run() {
             #[cfg(not(windows))]
             let mica = false;
             let _ = w.show();
-            app.manage(Platform { mica });
+            app.manage(Platform { mica, native_frame });
             apply_theme(app.handle(), &engine.settings().theme);
             engine.set_app(app.handle().clone());
             engine.spawn_scheduler();

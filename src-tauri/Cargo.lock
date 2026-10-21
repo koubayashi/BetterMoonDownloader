@@ -250,12 +250,13 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "better-moon-downloader"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chromiumoxide",
  "chrono",
  "dirs 5.0.1",
  "futures",
+ "libc",
  "log",
  "once_cell",
  "percent-encoding",

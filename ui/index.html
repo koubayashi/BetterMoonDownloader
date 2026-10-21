@@ -31,6 +31,10 @@
       <symbol id="i-trash" viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 10h6.6L14 6"/></symbol>
       <symbol id="i-copy" viewBox="0 0 20 20"><rect x="7" y="7" width="9" height="9" rx="1.6"/><path d="M13 7V5.6C13 4.7 12.3 4 11.4 4H5.6C4.7 4 4 4.7 4 5.6v5.8c0 .9.7 1.6 1.6 1.6H7"/></symbol>
       <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
+      <symbol id="i-wmin" viewBox="0 0 20 20"><path d="M4 10h12"/></symbol>
+      <symbol id="i-wmax" viewBox="0 0 20 20"><rect x="4.5" y="4.5" width="11" height="11" rx="1"/></symbol>
+      <symbol id="i-wrestore" viewBox="0 0 20 20"><rect x="4.5" y="7" width="8.5" height="8.5" rx="1"/><path d="M7 4.5h7.5c.6 0 1 .4 1 1V13"/></symbol>
+      <symbol id="i-wclose" viewBox="0 0 20 20"><path d="M4.5 4.5l11 11M15.5 4.5l-11 11"/></symbol>
     </defs>
   </svg>
 
@@ -82,9 +86,9 @@
           </label>
         </div>
         <div class="caption" aria-label="Window controls">
-          <button class="cap" id="capMin" title="Minimize">&#xE921;</button>
-          <button class="cap" id="capMax" title="Maximize">&#xE922;</button>
-          <button class="cap cap-close" id="capClose" title="Close">&#xE8BB;</button>
+          <button class="cap" id="capMin" title="Minimize"><svg><use href="#i-wmin"/></svg></button>
+          <button class="cap" id="capMax" title="Maximize"><svg><use href="#i-wmax"/></svg></button>
+          <button class="cap cap-close" id="capClose" title="Close"><svg><use href="#i-wclose"/></svg></button>
         </div>
       </header>
 

@@ -127,7 +127,8 @@ pub fn load() -> Settings {
 
 /// Secrets (API key, proxy passwords) are sealed with Windows DPAPI: only
 /// this Windows account can read them back, not other programs scanning
-/// `%APPDATA%` files or a copy of the file on another machine.
+/// `%APPDATA%` files or a copy of the file on another machine. Elsewhere the
+/// file is owner-only (0600), the usual protection for app tokens on Linux.
 pub fn save(s: &Settings) {
     let mut on_disk = s.clone();
     on_disk.dn_api_key = secret::seal(&s.dn_api_key);
@@ -135,10 +136,25 @@ pub fn save(s: &Settings) {
     if let Ok(b) = serde_json::to_vec_pretty(&on_disk) {
         let path = data_dir().join("settings.json");
         let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, b).is_ok() {
+        if write_private(&tmp, &b).is_ok() {
             let _ = std::fs::rename(tmp, path);
         }
     }
+}
+
+#[cfg(unix)]
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    // `mode` only applies to new files; a leftover tmp keeps its old bits.
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
 }
 
 mod secret {
@@ -197,7 +213,7 @@ mod secret {
         None
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     mod tests {
         #[test]
         fn round_trip_and_legacy() {

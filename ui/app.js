@@ -747,7 +747,7 @@ $("#openOut").addEventListener("click", () => invoke("open_folder", { path: stat
 // Window controls (undecorated window).
 if (inApp) {
   const showMax = (max) => {
-    $("#capMax").innerHTML = max ? "&#xE923;" : "&#xE922;";
+    $("#capMax").innerHTML = `<svg><use href="#i-${max ? "wrestore" : "wmax"}"/></svg>`;
     $("#capMax").title = max ? "Restore" : "Maximize";
   };
   const syncMax = () => invoke("win_is_maximized").then(showMax).catch(() => {});
@@ -763,7 +763,7 @@ if (inApp) {
 // ── theme ──────────────────────────────────────────────────────────────────
 const THEME_ORDER = ["system", "light", "dark"];
 const THEME_ICON = { system: "auto", light: "sun", dark: "moon" };
-const THEME_LABEL = { system: "Appearance: match Windows", light: "Appearance: light", dark: "Appearance: dark" };
+const THEME_LABEL = { system: "Appearance: match system", light: "Appearance: light", dark: "Appearance: dark" };
 function applyTheme(t) {
   if (t === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = t;
@@ -969,6 +969,8 @@ async function copy(text, msg) {
   state.settings = await invoke("get_settings");
   state.platform = await invoke("platform_info");
   if (state.platform.mica) document.documentElement.classList.add("mica");
+  // Linux uses the system title bar, which brings its own window buttons.
+  if (state.platform.nativeFrame) $(".caption").hidden = true;
   applyTheme(state.settings.theme);
   updateOutLabel();
   poll();
@@ -997,7 +999,7 @@ function mockInvoke(cmd, args = {}) {
   switch (cmd) {
     case "get_settings": return Promise.resolve({ ...m.settings });
     case "set_settings": m.settings = args.settings; return Promise.resolve(args.settings);
-    case "platform_info": return Promise.resolve({ mica: false, version: "1.0.0 (preview)", browser: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" });
+    case "platform_info": return Promise.resolve({ mica: false, nativeFrame: false, version: "1.0.0 (preview)", browser: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" });
     case "preview_links": {
       const l = (args.text.match(/https?:\/\/\S+/g) || []);
       const ok = l.filter((x) => /fuckingfast|datanodes/.test(x));

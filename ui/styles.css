@@ -4,7 +4,6 @@
   color-scheme: light;
   --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --icons: "Segoe Fluent Icons", "Segoe MDL2 Assets";
 
   --side: oklch(0.955 0.006 262);
   --surface: oklch(0.992 0.002 262);
@@ -198,8 +197,9 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .caption { display: flex; align-self: flex-start; height: 34px; margin-left: 4px; }
 .cap {
   width: 46px; height: 34px; border: 0; background: transparent; color: var(--ink);
-  font: 10px/1 var(--icons); transition: background-color .1s ease;
+  display: grid; place-items: center; transition: background-color .1s ease;
 }
+.cap svg { width: 10px; height: 10px; stroke-width: 2; stroke-linecap: square; stroke-linejoin: miter; }
 .cap:hover { background: oklch(from var(--ink) l c h / 0.07); }
 .cap-close:hover { background: #c42b1c; color: #fff; }
 
