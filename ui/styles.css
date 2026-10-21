@@ -160,6 +160,8 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 }
 
 .toolbar { display: flex; align-items: center; gap: 12px; height: 52px; padding-left: 20px; flex: none; }
+/* No caption buttons on the right (Linux, system title bar): mirror the left gutter. */
+.toolbar:has(.caption[hidden]) { padding-right: 20px; }
 .view-title { font: 600 15px/1 var(--font-display); letter-spacing: -0.01em; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .toolbar-actions { display: flex; align-items: center; gap: 6px; }
 
