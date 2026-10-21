@@ -5,13 +5,13 @@
 <h1 align="center">BetterMoonDownloader</h1>
 
 <p align="center">
-  A fast, portable bulk downloader for <b>fuckingfast.co</b> and <b>datanodes.to</b> links, for Windows.<br>
+  A fast, portable bulk downloader for <b>fuckingfast.co</b> and <b>datanodes.to</b> links, for Windows and Linux.<br>
   Written in Rust + Tauri. A rewrite of <a href="https://github.com/LeyckerS/moondownloader">moondownloader</a>.
 </p>
 
 <p align="center">
   <a href="https://github.com/koubayashi/BetterMoonDownloader/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/koubayashi/BetterMoonDownloader"></a>
-  <img alt="Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4">
+  <img alt="Windows 10/11 and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078d4">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
@@ -19,9 +19,65 @@ Paste or drop a `.txt` full of share links. BetterMoonDownloader turns each one 
 
 ## Download
 
-Get **`BetterMoonDownloader.exe`** from the [latest release](https://github.com/koubayashi/BetterMoonDownloader/releases/latest).
+Everything is on the [latest release](https://github.com/koubayashi/BetterMoonDownloader/releases/latest) page.
 
-It's portable: a single exe, no installer, no admin rights. Run it from anywhere. It needs Microsoft WebView2, which already ships with Windows 10 and 11.
+| System | File | Kind |
+|---|---|---|
+| Windows 10/11 | `BetterMoonDownloader.exe` | Portable, just run it |
+| Linux (any distro) | `BetterMoonDownloader_<version>_amd64.AppImage` | Portable, just run it |
+| Ubuntu, Debian, Mint, Pop!_OS | `BetterMoonDownloader_<version>_amd64.deb` | Installs, with an app-menu entry |
+| Fedora, openSUSE, RHEL | `BetterMoonDownloader-<version>-1.x86_64.rpm` | Installs, with an app-menu entry |
+
+`SHA256SUMS-linux.txt` lists the checksums of the Linux files.
+
+### Windows
+
+A single exe: no installer, no admin rights. Run it from anywhere. It needs Microsoft WebView2, which already ships with Windows 10 and 11.
+
+### Linux: AppImage (portable)
+
+An AppImage is one file that runs on almost any 64-bit distro without installing. Linux doesn't let downloaded files run until you mark them as programs, so do that once:
+
+- **File manager:** right-click the file → **Properties** → **Permissions** → tick **Allow executing file as program** (GNOME/Nautilus), or **Is executable** (KDE/Dolphin). Then double-click it.
+- **Terminal:**
+
+  ```bash
+  chmod +x BetterMoonDownloader_*_amd64.AppImage
+  ```
+
+  ```bash
+  ./BetterMoonDownloader_*_amd64.AppImage
+  ```
+
+**If it doesn't start**, your system is probably missing FUSE, which AppImages use to open themselves. Install it once:
+
+- Ubuntu 24.04 and newer: `sudo apt install libfuse2t64`
+- Ubuntu 22.04, Debian, Mint: `sudo apt install libfuse2`
+- Fedora: `sudo dnf install fuse-libs`
+
+Or skip FUSE entirely by starting it with `./BetterMoonDownloader_*_amd64.AppImage --appimage-extract-and-run`.
+
+**Want it in your app menu?** An AppImage doesn't add itself. Tools like [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever) or [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher) do it for you. Or use the `.deb` / `.rpm` below.
+
+### Linux: .deb or .rpm (installed, in the app menu)
+
+These install BetterMoonDownloader like any other app, with an icon in your app menu under **Utilities**. Your package manager pulls in what it needs (WebKitGTK).
+
+Ubuntu, Debian, Mint, Pop!_OS:
+
+```bash
+sudo apt install ./BetterMoonDownloader_*_amd64.deb
+```
+
+Fedora, openSUSE, RHEL:
+
+```bash
+sudo dnf install ./BetterMoonDownloader-*.x86_64.rpm
+```
+
+On openSUSE, use `sudo zypper install` with the same file. Double-clicking either file in your file manager also opens it in your software center.
+
+To remove it later: `sudo apt remove better-moon-downloader` or `sudo dnf remove better-moon-downloader`.
 
 ## Features
 
@@ -43,14 +99,14 @@ It's portable: a single exe, no installer, no admin rights. Run it from anywhere
 
 ### Where things are kept
 
-| What | Where |
-|---|---|
-| Queue and settings | `%APPDATA%\BetterMoonDownloader` (`queue.json`, `settings.json`) |
-| Built-in browser data (Cloudflare cookies) | `%LOCALAPPDATA%\BetterMoonDownloader\webview-profile` |
-| External browser profile (if used) | `%LOCALAPPDATA%\BetterMoonDownloader\browser-profile` |
-| Partial downloads | `<name>.bmdpart`, with progress in `<name>.bmdpart.json`, next to the final file |
+| What | Windows | Linux |
+|---|---|---|
+| Queue and settings (`queue.json`, `settings.json`) | `%APPDATA%\BetterMoonDownloader` | `~/.config/BetterMoonDownloader` |
+| Built-in browser data (Cloudflare cookies) | `%LOCALAPPDATA%\BetterMoonDownloader\webview-profile` | `~/.local/share/BetterMoonDownloader/webview-profile` |
+| External browser profile (if used) | `%LOCALAPPDATA%\BetterMoonDownloader\browser-profile` | `~/.local/share/BetterMoonDownloader/browser-profile` |
+| Partial downloads | `<name>.bmdpart`, with progress in `<name>.bmdpart.json`, next to the final file | same |
 
-The datanodes API key is encrypted with Windows DPAPI, so it only works for the Windows account that saved it.
+On Windows the datanodes API key is encrypted with DPAPI, so it only works for the Windows account that saved it. On Linux `settings.json` is readable only by your user (permissions `600`), the usual protection for app keys there.
 
 A file already in the folder counts as done only when its size matches the server's exactly. Otherwise it's renamed to `name.old.ext` and downloaded again. Neither host publishes checksums, so for `.rar` sets, use WinRAR's or 7-Zip's **Test** to check the archive before extracting.
 
@@ -65,6 +121,14 @@ powershell -ExecutionPolicy Bypass -File ./build-release.ps1
 ```
 
 Output: `src-tauri/target/release/better-moon-downloader.exe`.
+
+On Linux, install the WebKitGTK development libraries first (Ubuntu: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf`; Fedora: `webkit2gtk4.1-devel gtk3-devel librsvg2-devel libxdo-devel openssl-devel`), then:
+
+```bash
+cd src-tauri && npx --yes @tauri-apps/cli@2 build --bundles appimage,deb,rpm
+```
+
+The packages land in `src-tauri/target/release/bundle/`. Release builds come from [the Linux workflow](.github/workflows/linux.yml), which builds on Ubuntu 22.04 so the result also runs on older distros.
 
 Tests (the live download tests are opt-in and need network):
 

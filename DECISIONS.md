@@ -106,6 +106,19 @@ Test hook: start the app with `BMD_PROBE="<links>"` set. It resolves those links
 | B1 | Ship both a portable `.exe` (~19 MB) and an NSIS installer (~4.6 MB). | Portable for "just run it", installer for a Start-menu entry and uninstall. | — |
 | B2 | Release profile: LTO, `codegen-units = 1`, stripped. | Smallest and fastest binary. | Release builds take about 3–6 minutes. |
 | B3 | The UI has a **built-in mock engine** that only runs when opened outside Tauri (in a browser), with synthetic data. | Lets the interface be designed and previewed without the desktop shell. | It's dead code inside the app (a few KB). |
+| B4 | From v1.1 the GitHub release carries **only the portable exe** for Windows. The installer is still built locally by `build-release.ps1`. | Portable is what users asked for; one file is less confusing. | No Start-menu entry or uninstaller on Windows. |
+
+## 6b. Linux (v1.2, branch `feat/linux`)
+
+| # | Decision | Why | Trade-off |
+|---|----------|-----|-----------|
+| L1 | Ship an **AppImage** (portable), plus a **.deb** and an **.rpm** for people who want an app-menu entry. All three are Tauri's own bundles. | The AppImage is the Linux equivalent of the portable exe; .deb and .rpm cover the big distro families with no extra tooling. | Arch users wrap the AppImage themselves (AUR). Flatpak/Flathub left for later: it needs a hand-written manifest, and its sandbox breaks the external-Chrome mode. |
+| L2 | Build them in **GitHub Actions on Ubuntu 22.04**, never on a developer machine. | A Linux binary needs a glibc at least as old as the one it was built on, so the oldest supported Ubuntu gives the widest reach. CI paths are generic, so nothing personal is embedded. | Building on Linux requires a push. |
+| L3 | Linux uses the **system title bar** and an opaque window. Windows keeps the custom, borderless, Mica window. | Borderless windows lose their resize edges on GNOME/Wayland, and transparent windows render unreliably on WebKitGTK. | Linux doesn't get the custom caption look. |
+| L4 | Window buttons are **SVG**, not the Segoe Fluent icon font. | That font exists only on Windows; elsewhere the buttons would be blank. | — |
+| L5 | On Linux, `settings.json` is written **owner-only (0600)** instead of DPAPI-encrypted. | DPAPI is Windows-only. 0600 is how Linux apps usually keep tokens (`~/.netrc`, `gh`, `docker`). The system keyring (Secret Service) is absent on many minimal setups and adds a D-Bus dependency. | Any program running as the same user can read the key, as on most Linux apps. |
+| L6 | The free-space check uses `statvfs` (`f_bavail`) on Linux. | Same up-front "will it fit" check as Windows, counting only space usable without root. | — |
+| L7 | The external browser falls back to Chromium paths on Linux. | Many distros ship Chromium, not Chrome. Flatpak/Snap browsers can't be driven over a debugging port reliably, so only the plain installs are searched (and `/snap/bin/chromium`). | A Flatpak-only Chrome needs the built-in browser instead, which is the default anyway. |
 
 ## 7. Verification status
 
@@ -121,6 +134,10 @@ Test hook: start the app with `BMD_PROBE="<links>"` set. It resolves those links
 | **Resume support, datanodes** | ✅ `206` with an exact `Content-Range` for every range, 4 parallel ranges served, the link reusable, total size reported (2,097,152,000 bytes). |
 | Release grouping and mirror merge for two mirror lists of one 4-part release | ✅ unit test: 8 links → 1 release, 4 files, 4 + 4 sources |
 | Full multi-GB download of a real part through the app | ⚠️ not run (2 GB per part). The range checks above cover the mechanism. |
+| Linux build (v1.2): tests, AppImage/.deb/.rpm bundling, app starts under a virtual display | ✅ GitHub Actions on Ubuntu 22.04 |
+| Linux AppImage on Fedora 44 (WSL, no WebKitGTK installed) | ✅ starts and stays up; no install needed |
+| Linux .rpm dependencies on Fedora 44 | ✅ `dnf` dry run resolves `webkit2gtk4.1` from the Fedora repos |
+| Linux live link resolution through WebKitGTK (Cloudflare) | ⚠️ not run yet; needs a real Linux desktop |
 
 ## 5. Design
 
