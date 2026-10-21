@@ -74,7 +74,7 @@ Each entry: what was decided, why, and what we gave up. Newest decisions are app
 | W5 | The resolver window uses a **separate persistent profile** (`%LOCALAPPDATA%\BetterMoonDownloader\webview-profile`) and deletes the app's own `__TAURI__` globals before page scripts run. Remote pages get no IPC: the capabilities cover only the `main` window. | Keeps `cf_clearance` between links, removes an obvious fingerprint, and a hostile page can't call app commands. | — |
 | W6 | The window **stays hidden** and is shown only when Cloudflare needs a human: after 15 s on the interstitial, or after 10 s of Turnstile not clearing. It hides again afterwards. | In live tests it never had to appear. | — |
 
-**Live results (ExampleGame links, Oct 21 2026, built-in browser):**
+**Live results (a real 4-part release, Oct 21 2026, built-in browser):**
 
 | Link | Path | Time | Range check |
 |---|---|---|---|
@@ -119,7 +119,7 @@ Test hook: start the app with `BMD_PROBE="<links>"` set. It resolves those links
 | Live extraction, datanodes (ExampleGame part1) | ✅ resolved in 31 s through Edge; the captcha was solved automatically → `tunnelN.dlproxy.uk/download/…` plus cookies |
 | **Resume support, fuckingfast** | ✅ `206 Partial Content` for every range. 4 parallel ranges (0 MB, 50 MB, 100 MB, 150 MB) all served. The link still worked on a later request. Quirk: `Content-Range` always claims "to end of file", but the body honours the requested range. The downloader caps each range itself, so this is harmless. |
 | **Resume support, datanodes** | ✅ `206` with an exact `Content-Range` for every range, 4 parallel ranges served, the link reusable, total size reported (2,097,152,000 bytes). |
-| Release grouping and mirror merge for the two ExampleGame lists | ✅ unit test: 8 links → 1 release, 4 files, 4 + 4 sources |
+| Release grouping and mirror merge for two mirror lists of one 4-part release | ✅ unit test: 8 links → 1 release, 4 files, 4 + 4 sources |
 | Full multi-GB download of a real part through the app | ⚠️ not run (2 GB per part). The range checks above cover the mechanism. |
 
 ## 5. Design

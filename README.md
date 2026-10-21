@@ -28,10 +28,13 @@ Partial files are `<name>.bmdpart`, with progress saved in `<name>.bmdpart.json`
 
 Needs Rust (stable) and Node (only for the Tauri CLI).
 
+Use the release script. It strips your local paths (Windows username, checkout location) from the exe, and fails if any remain:
+
 ```bash
-cd src-tauri
-npx @tauri-apps/cli@2 build
+powershell -ExecutionPolicy Bypass -File ./build-release.ps1
 ```
+
+A plain `npx @tauri-apps/cli@2 build` in `src-tauri` also works, but embeds `C:\Users\<you>\…` build paths in the exe. Don't distribute builds made that way.
 
 Output: `src-tauri/target/release/better-moon-downloader.exe` and `src-tauri/target/release/bundle/nsis/*-setup.exe`.
 
