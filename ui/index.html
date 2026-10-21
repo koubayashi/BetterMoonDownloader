@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BetterMoonDownloader</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12"/></symbol>
+      <symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4.5v11l9-5.5z" fill="currentColor"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 20 20"><path d="M7 4.5v11M13 4.5v11"/></symbol>
+      <symbol id="i-retry" viewBox="0 0 20 20"><path d="M15.5 10a5.5 5.5 0 1 1-1.6-3.9M15.5 3.5v3.2h-3.2"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 20 20"><path d="M3 6.2c0-.9.7-1.7 1.7-1.7h3.2l1.6 1.8h5.8c.9 0 1.7.7 1.7 1.7v6.3c0 .9-.8 1.7-1.7 1.7H4.7c-1 0-1.7-.8-1.7-1.7z"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M4.9 15.1l1.4-1.4M13.7 6.3l1.4-1.4"/></symbol>
+      <symbol id="i-more" viewBox="0 0 20 20"><circle cx="5" cy="10" r=".6"/><circle cx="10" cy="10" r=".6"/><circle cx="15" cy="10" r=".6"/></symbol>
+      <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="4.8"/><path d="M12.4 12.4L16 16"/></symbol>
+      <symbol id="i-all" viewBox="0 0 20 20"><path d="M4 5.5h12M4 10h12M4 14.5h12"/></symbol>
+      <symbol id="i-down" viewBox="0 0 20 20"><path d="M10 3.5v10M5.5 9.5L10 14l4.5-4.5M4.5 16.5h11"/></symbol>
+      <symbol id="i-queue" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.4 1.6"/></symbol>
+      <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 20 20"><path d="M10 3.5l7 12.5H3z"/><path d="M10 8.5v3.3M10 14.1v.1"/></symbol>
+      <symbol id="i-log" viewBox="0 0 20 20"><path d="M5 3.5h7.5L15.5 6.5V16.5H5zM8 9h4.5M8 12h4.5"/></symbol>
+      <symbol id="i-file" viewBox="0 0 20 20"><path d="M5.5 3.5h6l3 3v10h-9zM11.5 3.5v3h3"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.8v1.6M10 15.6v1.6M2.8 10h1.6M15.6 10h1.6M4.9 4.9l1.1 1.1M14 14l1.1 1.1M4.9 15.1L6 14M14 6l1.1-1.1"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 20 20"><path d="M15.6 12.4A6.2 6.2 0 0 1 7.6 4.4a6.2 6.2 0 1 0 8 8z"/></symbol>
+      <symbol id="i-auto" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.2"/><path d="M10 3.8v12.4A6.2 6.2 0 0 0 10 3.8z" fill="currentColor"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M3.5 10h13M10 3.5c2 2 2.8 4.2 2.8 6.5S12 14.5 10 16.5M10 3.5C8 5.5 7.2 7.7 7.2 10s.8 4.5 2.8 6.5"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 10h6.6L14 6"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 20 20"><rect x="7" y="7" width="9" height="9" rx="1.6"/><path d="M13 7V5.6C13 4.7 12.3 4 11.4 4H5.6C4.7 4 4 4.7 4 5.6v5.8c0 .9.7 1.6 1.6 1.6H7"/></symbol>
+      <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="app" id="app">
+    <!-- Sidebar -->
+    <aside class="sidebar" data-tauri-drag-region>
+      <div class="brand" data-tauri-drag-region>
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 14.6A7.4 7.4 0 0 1 9 5.9a7.4 7.4 0 1 0 8.6 8.7z"/></svg>
+        <div class="brand-name" data-tauri-drag-region><span data-tauri-drag-region>BetterMoon</span><small data-tauri-drag-region>Downloader</small></div>
+      </div>
+
+      <nav class="filters" aria-label="Filter downloads">
+        <button class="filter is-active" data-filter="all"><svg><use href="#i-all"/></svg><span>All downloads</span><b data-count="all">0</b></button>
+        <button class="filter" data-filter="active"><svg><use href="#i-down"/></svg><span>Downloading</span><b data-count="active">0</b></button>
+        <button class="filter" data-filter="queued"><svg><use href="#i-queue"/></svg><span>Queued</span><b data-count="queued">0</b></button>
+        <button class="filter" data-filter="paused"><svg><use href="#i-pause"/></svg><span>Paused</span><b data-count="paused">0</b></button>
+        <button class="filter" data-filter="done"><svg><use href="#i-check"/></svg><span>Completed</span><b data-count="done">0</b></button>
+        <button class="filter" data-filter="failed"><svg><use href="#i-alert"/></svg><span>Failed</span><b data-count="failed">0</b></button>
+        <div id="relSection" hidden>
+          <div class="filters-sep"></div>
+          <div class="side-label">Releases</div>
+          <div class="releases" id="releases"></div>
+        </div>
+        <div class="filters-sep"></div>
+        <button class="filter" data-filter="log"><svg><use href="#i-log"/></svg><span>Activity</span><b data-count="log"></b></button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="side-label" id="saveToLabel">Save to</div>
+        <button class="side-btn" id="openOut" title="Open the download folder"><svg><use href="#i-folder"/></svg><span id="outLabel">Downloads</span></button>
+        <div class="side-row">
+          <button class="side-btn" id="openSettings"><svg><use href="#i-gear"/></svg><span>Settings</span></button>
+          <button class="icon-btn" id="themeBtn" title="Appearance"><svg><use href="#i-auto"/></svg></button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <header class="toolbar" data-tauri-drag-region>
+        <h1 class="view-title" id="viewTitle" data-tauri-drag-region>All downloads</h1>
+        <div class="toolbar-actions">
+          <button class="btn btn-primary" id="addBtn" title="Add links (Ctrl+N)"><svg><use href="#i-plus"/></svg><span>Add links</span></button>
+          <button class="btn" id="runBtn"><svg><use href="#i-pause"/></svg><span>Pause all</span></button>
+          <button class="icon-btn" id="moreBtn" title="More"><svg><use href="#i-more"/></svg></button>
+          <label class="search">
+            <svg><use href="#i-search"/></svg>
+            <input id="search" type="search" placeholder="Filter files" spellcheck="false" autocomplete="off">
+          </label>
+        </div>
+        <div class="caption" aria-label="Window controls">
+          <button class="cap" id="capMin" title="Minimize">&#xE921;</button>
+          <button class="cap" id="capMax" title="Maximize">&#xE922;</button>
+          <button class="cap cap-close" id="capClose" title="Close">&#xE8BB;</button>
+        </div>
+      </header>
+
+      <section class="summary" id="summary" hidden>
+        <svg class="summary-moon" id="sumMoon" viewBox="0 0 48 48" aria-hidden="true"></svg>
+        <div class="summary-text">
+          <p class="summary-line" id="sumLine1"></p>
+          <p class="summary-line summary-live" id="sumLine2"></p>
+          <div class="bar bar-lg" id="sumBar"><i></i></div>
+        </div>
+        <figure class="tide">
+          <canvas id="tide" width="240" height="64" aria-label="Download speed over the last two minutes"></canvas>
+          <figcaption id="tideCap"></figcaption>
+        </figure>
+      </section>
+
+      <div class="banner banner-attn" id="attn" hidden>
+        <svg><use href="#i-globe"/></svg>
+        <p id="attnText"></p>
+        <button class="btn btn-primary btn-sm" id="showBrowser">Show browser</button>
+      </div>
+      <div class="banner banner-danger" id="diskFull" hidden>
+        <svg><use href="#i-alert"/></svg>
+        <p id="diskText"></p>
+        <button class="btn btn-sm" id="diskOpen">Open folder</button>
+        <button class="btn btn-primary btn-sm" id="diskResume">Resume all</button>
+      </div>
+
+      <div class="list-wrap" id="listWrap">
+        <div class="list-head" id="listHead">
+          <span class="c-name">Name</span>
+          <span class="c-prog">Progress</span>
+          <span class="c-size">Size</span>
+          <span class="c-speed">Speed</span>
+          <span class="c-eta">Time left</span>
+          <span class="c-act"></span>
+        </div>
+        <div class="list" id="list" role="listbox" aria-multiselectable="true" tabindex="0"></div>
+
+        <div class="empty" id="empty" hidden>
+          <svg class="empty-moon" viewBox="0 0 120 120" aria-hidden="true">
+            <circle cx="60" cy="60" r="44" class="em-base"/>
+            <path class="em-lit" d="M60 16 A44 44 0 0 1 60 104 A20 44 0 0 0 60 16Z"/>
+          </svg>
+          <h2 id="emptyTitle">Nothing to download yet</h2>
+          <p id="emptyText">Drop a <code>.txt</code> of fuckingfast or datanodes links on this window, or paste them.</p>
+          <button class="btn btn-primary" id="emptyAdd"><svg><use href="#i-plus"/></svg><span>Add links</span></button>
+        </div>
+
+        <div class="log" id="log" hidden></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Drop overlay -->
+  <div class="drop" id="drop" hidden>
+    <div class="drop-card">
+      <svg><use href="#i-file"/></svg>
+      <p>Drop to add links</p>
+    </div>
+  </div>
+
+  <!-- Add links sheet -->
+  <div class="scrim" id="addScrim" hidden>
+    <form class="sheet" id="addSheet" role="dialog" aria-modal="true" aria-labelledby="addTitle" autocomplete="off">
+      <header class="sheet-head">
+        <h2 id="addTitle">Add links</h2>
+        <button type="button" class="btn btn-sm" id="openTxt" title="You can pick several files at once"><svg><use href="#i-file"/></svg><span>Open .txt files…</span></button>
+      </header>
+      <textarea id="addText" spellcheck="false" placeholder="https://fuckingfast.co/abc123#Game.part01.rar&#10;https://datanodes.to/xyz789/Game.part02.rar&#10;…"></textarea>
+      <p class="preview" id="addPreview">Paste links, one per line. Anything else in the text is ignored.</p>
+      <div class="field-row">
+        <span class="field-label">Save to</span>
+        <span class="path" id="addDir"></span>
+        <button type="button" class="btn btn-sm" id="addDirBtn">Change…</button>
+      </div>
+      <label class="check"><input type="checkbox" id="addStart" checked><span>Start downloading right away</span></label>
+      <footer class="sheet-foot">
+        <button type="button" class="btn" id="addCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="addSubmit" disabled>Add links</button>
+      </footer>
+    </form>
+  </div>
+
+  <!-- Settings sheet -->
+  <div class="scrim" id="setScrim" hidden>
+    <form class="sheet sheet-wide" id="setSheet" role="dialog" aria-modal="true" aria-labelledby="setTitle" autocomplete="off">
+      <header class="sheet-head"><h2 id="setTitle">Settings</h2></header>
+      <div class="settings">
+        <section>
+          <h3>Downloads</h3>
+          <div class="field-row">
+            <span class="field-label">Save to</span>
+            <span class="path" id="setDir"></span>
+            <button type="button" class="btn btn-sm" id="setDirBtn">Change…</button>
+          </div>
+          <label class="field"><span>Files at once</span><input type="number" min="1" max="32" name="maxActive"></label>
+          <label class="field"><span>Connections per file</span><input type="number" min="1" max="16" name="connections"><small>More connections speed up a single file. Lower it if a host starts refusing.</small></label>
+          <label class="field"><span>Speed limit</span><input type="number" min="0" step="0.5" name="speedLimitMbs"><small>MB/s for everything combined. 0 means no limit.</small></label>
+          <label class="field"><span>When done</span>
+            <select name="mode"><option value="download">Download the files</option><option value="links">Only get direct links (to export)</option></select>
+          </label>
+          <label class="check"><input type="checkbox" name="releaseFolders"><span>Put each release in its own folder (Save to\ExampleGame\…)</span></label>
+          <label class="check"><input type="checkbox" name="autoStart"><span>Start new links right away</span></label>
+          <label class="check"><input type="checkbox" name="stallKiller"><span>Get a fresh link when a file crawls under 0.5 MB/s for a minute</span></label>
+        </section>
+        <section>
+          <h3>Link resolving</h3>
+          <label class="field"><span>Links at once</span><input type="number" min="1" max="16" name="maxResolving"></label>
+          <label class="field"><span>Retries per link</span><input type="number" min="0" max="10" name="retries"></label>
+          <label class="field"><span>Browser tabs</span><input type="number" min="1" max="8" name="browserPages"><small>Tabs open at once in the one shared browser window. Separate windows make Cloudflare suspicious.</small></label>
+          <label class="field"><span>Captcha wait</span><input type="number" min="0" max="1800" name="captchaWait"><small>Seconds to wait for you to tick “Verify you are human”.</small></label>
+          <label class="field"><span>Browser</span><input type="text" name="browserPath" placeholder="Detecting…"><small id="browserHint">Chrome is preferred; Edge works too. Leave empty to detect.</small></label>
+          <label class="field"><span>datanodes API key</span><input type="password" name="dnApiKey" placeholder="Optional, premium only"><small>With a premium key, datanodes links skip the browser entirely.</small></label>
+          <label class="field field-block"><span>Proxies</span><textarea name="proxies" rows="3" placeholder="One per line: ip:port, ip:port:user:pass, socks5://host:port"></textarea><small>Downloads rotate through these. Leave empty for a direct connection.</small></label>
+        </section>
+      </div>
+      <footer class="sheet-foot">
+        <span class="foot-note" id="verNote"></span>
+        <button type="button" class="btn" id="setCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </footer>
+    </form>
+  </div>
+
+  <!-- Context / more menus -->
+  <div class="menu" id="menu" role="menu" hidden></div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
