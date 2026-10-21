@@ -267,6 +267,25 @@ pub async fn eval<T: DeserializeOwned>(page: &Page, func: &str, arg: Option<Valu
     None
 }
 
+impl crate::extract::PageOps for Page {
+    async fn eval_value(&self, func: &str, arg: Option<Value>) -> Option<Value> {
+        eval::<Value>(self, func, arg).await
+    }
+    async fn goto(&self, url: &str) {
+        let _ = self
+            .execute(chromiumoxide::cdp::browser_protocol::page::NavigateParams::new(url))
+            .await;
+    }
+    async fn reload(&self) {
+        let _ = self
+            .execute(chromiumoxide::cdp::browser_protocol::page::ReloadParams::default())
+            .await;
+    }
+    async fn captcha(&self, wait: u64, attention: &Attention, label: &str) -> bool {
+        solve_turnstile(self, wait, attention, label).await
+    }
+}
+
 async fn mouse(page: &Page, kind: DispatchMouseEventType, x: f64, y: f64, pressed: bool) {
     let mut b = DispatchMouseEventParams::builder().r#type(kind).x(x).y(y);
     if pressed {

@@ -981,7 +981,7 @@ function mockInvoke(cmd, args = {}) {
       error: i === 13 ? "File not found on datanodes" : null, note: null, hasDirect: i < 8, addedAt: t0, finishedAt: i < 4 ? t0 - (4 - i) * 400000 : null,
     }));
     jobs.forEach((j) => { j.done = j.state === "done" ? j.total : j.state === "paused" ? j.total * 0.37 : j.state === "downloading" ? j.total * (0.15 + 0.17 * (j.id % 4)) : 0; });
-    return { jobs, history: [], settings: { outDir: "C:\\Users\\you\\Downloads\\BetterMoon", maxActive: 4, connections: 4, maxResolving: 3, retries: 3, browserPages: 3, captchaWait: 240, browserPath: "", dnApiKey: "", proxies: "", mode: "download", stallKiller: true, speedLimitMbs: 0, theme: "system", autoStart: true, releaseFolders: true } };
+    return { jobs, history: [], settings: { outDir: "C:\\Users\\you\\Downloads\\BetterMoon", maxActive: 4, connections: 4, maxResolving: 3, retries: 3, browserPages: 3, captchaWait: 240, browserPath: "", dnApiKey: "", proxies: "", mode: "download", stallKiller: true, speedLimitMbs: 0, theme: "system", autoStart: true, releaseFolders: true, builtinBrowser: true } };
   })());
   switch (cmd) {
     case "get_settings": return Promise.resolve({ ...m.settings });

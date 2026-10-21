@@ -4,6 +4,8 @@ mod engine;
 mod extract;
 mod settings;
 mod util;
+mod webview;
+mod probe;
 
 use engine::{AddResult, Engine, Snapshot};
 use serde::Serialize;
@@ -181,7 +183,11 @@ pub fn run() {
             }
             app.manage(Platform { mica });
             apply_theme(app.handle(), &engine.settings().theme);
+            engine.set_app(app.handle().clone());
             engine.spawn_scheduler();
+            if let Ok(links) = std::env::var("BMD_PROBE") {
+                probe::run(app.handle().clone(), engine.clone(), links);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -249,7 +255,7 @@ mod live {
         let links = std::env::var("BMD_LINKS").expect("BMD_LINKS");
         let attention = std::sync::Arc::new(engine::Attention::default());
         let gate = std::sync::Arc::new(browser::BrowserGate::new(attention));
-        let ctx = extract::ExtractCtx { http: extract::extraction_client(), gate: gate.clone(), settings: settings::Settings::default() };
+        let ctx = extract::ExtractCtx { http: extract::extraction_client(), gate: gate.clone(), settings: settings::Settings::default(), app: None };
         let client = reqwest::Client::builder().user_agent(util::USER_AGENT).http1_only().build().unwrap();
         for url in links.split_whitespace() {
             println!("\n== {url}");

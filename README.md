@@ -18,7 +18,7 @@ Paste or drop a `.txt` full of **fuckingfast.co** / **datanodes.to** links. It r
    The header shows the whole batch: files done, GB done, total speed, time left, and the clock time it should finish.
 3. **Right-click** a row (or select several with Ctrl/Shift) to pause, resume, retry, show in folder, copy links, or remove.
    `Space` pauses or resumes the selection, `Del` removes it, and `Shift+Del` also deletes the partial file.
-4. **Captchas.** Both sites sit behind Cloudflare Turnstile. The app opens a real Chrome (or Edge) window on its own profile and tries to tick the box itself. If it can't, a blue banner asks you to tick it. Click **Show browser**, tick it, and the download continues. The profile remembers the clearance, so later links get challenged less.
+4. **Captchas.** Both sites sit behind Cloudflare. Links are resolved in a **hidden browser window inside the app** (Windows' built-in Edge engine), so there's nothing to install and no browser pops up. If Cloudflare ever wants a click, a small "BetterMoonDownloader · verification" window appears with the checkbox, and the blue banner tells you so. Tick it and the download continues. You can switch back to an external Chrome/Edge window in Settings.
 5. **Settings**: files at once, connections per file, speed limit, links-only mode (export direct links for another downloader), retries, browser tabs, captcha wait, browser path, datanodes premium API key (skips the browser), and proxies.
 
 Data lives in `%APPDATA%\BetterMoonDownloader` (`queue.json`, `settings.json`). The browser profile is in `%LOCALAPPDATA%\BetterMoonDownloader\browser-profile`.

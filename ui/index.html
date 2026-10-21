@@ -193,11 +193,12 @@
         </section>
         <section>
           <h3>Link resolving</h3>
+          <label class="check"><input type="checkbox" name="builtinBrowser"><span>Use the built-in browser. Links open in a hidden window inside the app, which only appears if Cloudflare needs a click</span></label>
           <label class="field"><span>Links at once</span><input type="number" min="1" max="16" name="maxResolving"></label>
           <label class="field"><span>Retries per link</span><input type="number" min="0" max="10" name="retries"></label>
           <label class="field"><span>Browser tabs</span><input type="number" min="1" max="8" name="browserPages"><small>Tabs open at once in the one shared browser window. Separate windows make Cloudflare suspicious.</small></label>
           <label class="field"><span>Captcha wait</span><input type="number" min="0" max="1800" name="captchaWait"><small>Seconds to wait for you to tick “Verify you are human”.</small></label>
-          <label class="field"><span>Browser</span><input type="text" name="browserPath" placeholder="Detecting…"><small id="browserHint">Chrome is preferred; Edge works too. Leave empty to detect.</small></label>
+          <label class="field"><span>Browser</span><input type="text" name="browserPath" placeholder="Detecting…"><small id="browserHint">Only used when the built-in browser is off. Chrome is preferred; Edge works too. Leave empty to detect.</small></label>
           <label class="field"><span>datanodes API key</span><input type="password" name="dnApiKey" placeholder="Optional, premium only"><small>With a premium key, datanodes links skip the browser entirely.</small></label>
           <label class="field field-block"><span>Proxies</span><textarea name="proxies" rows="3" placeholder="One per line: ip:port, ip:port:user:pass, socks5://host:port"></textarea><small>Downloads rotate through these. Leave empty for a direct connection.</small></label>
         </section>

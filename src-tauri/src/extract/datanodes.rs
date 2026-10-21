@@ -12,12 +12,13 @@
 //!   page runs adblock detection). Only images, media and fonts are dropped.
 
 use super::{ExtractCtx, ResolveError, Resolved};
-use crate::browser::{self, eval};
+use super::{ev, PageOps};
+use crate::browser;
 use chromiumoxide::cdp::browser_protocol::fetch::{
     self, ContinueRequestParams, EventRequestPaused, FailRequestParams, RequestPattern,
 };
 use chromiumoxide::cdp::browser_protocol::network::{self, ErrorReason, GetCookiesParams, ResourceType};
-use chromiumoxide::cdp::browser_protocol::page::{NavigateParams, ReloadParams};
+
 use chromiumoxide::cdp::browser_protocol::target::{
     CloseTargetParams, EventTargetCreated, EventTargetInfoChanged,
 };
@@ -91,6 +92,9 @@ pub async fn resolve(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolve
         if let Some(direct) = via_api(ctx, url).await {
             return Ok(Resolved { url: direct, cookies: None });
         }
+    }
+    if let Some(app) = ctx.builtin() {
+        return crate::webview::resolve_datanodes(app, ctx, url, label).await;
     }
     via_browser(ctx, url, label).await
 }
@@ -229,15 +233,14 @@ struct Step2 {
     trigger: Option<String>,
 }
 
-async fn via_browser(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolved, ResolveError> {
-    let s = &ctx.settings;
-    let lane = ctx
-        .gate
-        .acquire(s.browser_pages, &s.browser_path)
-        .await
-        .map_err(ResolveError::Retry)?;
-    let page = browser::new_page(&lane.browser).await.map_err(ResolveError::Retry)?;
+/// Watches every URL the page touches and keeps the first that is the file.
+pub(crate) struct Capture {
+    pub captured: Arc<Mutex<Option<String>>>,
+    pub take: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    pub landing_host: String,
+}
 
+pub(crate) fn capture_for(url: &str) -> Result<Capture, ResolveError> {
     let parsed = url::Url::parse(url).map_err(|e| ResolveError::Dead(e.to_string()))?;
     let landing_host = parsed.host_str().unwrap_or("datanodes.to").to_lowercase();
     let want_name = {
@@ -273,6 +276,18 @@ async fn via_browser(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolve
             false
         })
     };
+    Ok(Capture { captured, take, landing_host })
+}
+
+async fn via_browser(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolved, ResolveError> {
+    let s = &ctx.settings;
+    let Capture { captured, take, landing_host } = capture_for(url)?;
+    let lane = ctx
+        .gate
+        .acquire(s.browser_pages, &s.browser_path)
+        .await
+        .map_err(ResolveError::Retry)?;
+    let page = browser::new_page(&lane.browser).await.map_err(ResolveError::Retry)?;
 
     let mut tasks = Vec::new();
     let _ = page.execute(network::EnableParams::default()).await;
@@ -374,17 +389,17 @@ async fn via_browser(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolve
     result
 }
 
-async fn flow(
+pub(crate) async fn flow<P: PageOps>(
     ctx: &ExtractCtx,
-    page: &chromiumoxide::Page,
+    page: &P,
     url: &str,
     label: &str,
     captured: &Arc<Mutex<Option<String>>>,
 ) -> Result<(), ResolveError> {
     let got = || captured.lock().unwrap().is_some();
-    let _ = page.execute(NavigateParams::new(url)).await;
+    page.goto(url).await;
     tokio::time::sleep(Duration::from_millis(1200)).await;
-    if eval::<bool>(page, DEAD_JS, None).await.unwrap_or(false) {
+    if ev::<bool, _>(page, DEAD_JS, None).await.unwrap_or(false) {
         return Err(ResolveError::Dead("File not found on datanodes".into()));
     }
 
@@ -396,48 +411,50 @@ async fn flow(
     let mut gate = Gate::default();
     let mut asked = false;
     while t_gate.elapsed() < deadline && !got() {
-        shape = eval::<String>(page, SHAPE_JS, None).await.unwrap_or_default();
+        shape = ev::<String, _>(page, SHAPE_JS, None).await.unwrap_or_default();
         if shape == "step2" {
             break;
         }
         if shape == "step1" {
-            gate = eval::<Gate>(page, GATE_JS, Some(false.into())).await.unwrap_or_default();
+            gate = ev::<Gate, _>(page, GATE_JS, Some(false.into())).await.unwrap_or_default();
             if gate.ready {
                 break;
             }
-        } else if eval::<bool>(page, DEAD_JS, None).await.unwrap_or(false) {
+        } else if ev::<bool, _>(page, DEAD_JS, None).await.unwrap_or(false) {
             return Err(ResolveError::Dead("File not found on datanodes".into()));
         } else if !asked && t_gate.elapsed() > Duration::from_secs(15) {
             asked = true;
             ctx.gate.attention.raise(label);
+            page.show_to_user(true).await;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     if asked {
         ctx.gate.attention.clear(label);
+        page.show_to_user(false).await;
     }
 
     if shape == "step2" {
-        let _ = eval::<serde_json::Value>(page, OVERLAY_JS, None).await;
+        let _ = ev::<serde_json::Value, _>(page, OVERLAY_JS, None).await;
     } else if !got() {
         if !gate.ready {
             // The site's own escape hatch for its broken-bundle case.
-            gate = eval::<Gate>(page, GATE_JS, Some(true.into())).await.unwrap_or_default();
+            gate = ev::<Gate, _>(page, GATE_JS, Some(true.into())).await.unwrap_or_default();
             if !gate.ready {
                 return Err(ResolveError::Retry(
                     "datanodes page never showed its download controls (Cloudflare check pending?)".into(),
                 ));
             }
         }
-        let _ = eval::<serde_json::Value>(page, OVERLAY_JS, None).await;
-        if !eval::<bool>(page, LATCH_JS, None).await.unwrap_or(false) {
+        let _ = ev::<serde_json::Value, _>(page, OVERLAY_JS, None).await;
+        if !ev::<bool, _>(page, LATCH_JS, None).await.unwrap_or(false) {
             return Err(ResolveError::Retry("step 1 already submitted".into()));
         }
-        if !eval::<bool>(page, SUBMIT_JS, None).await.unwrap_or(false) {
+        if !ev::<bool, _>(page, SUBMIT_JS, None).await.unwrap_or(false) {
             return Err(ResolveError::Retry("step 1 form missing".into()));
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
-        if eval::<bool>(page, DEAD_JS, None).await.unwrap_or(false) {
+        if ev::<bool, _>(page, DEAD_JS, None).await.unwrap_or(false) {
             return Err(ResolveError::Dead("File not found on datanodes".into()));
         }
     }
@@ -450,10 +467,10 @@ async fn flow(
         let t2 = Instant::now();
         while t2.elapsed() < STEP2_TIMEOUT && !got() {
             if last_sweep.elapsed() > Duration::from_secs(1) {
-                let _ = eval::<serde_json::Value>(page, OVERLAY_JS, None).await;
+                let _ = ev::<serde_json::Value, _>(page, OVERLAY_JS, None).await;
                 last_sweep = Instant::now();
             }
-            let Some(st) = eval::<Step2>(page, STEP2_JS, None).await else {
+            let Some(st) = ev::<Step2, _>(page, STEP2_JS, None).await else {
                 tokio::time::sleep(Duration::from_millis(400)).await;
                 continue;
             };
@@ -465,7 +482,7 @@ async fn flow(
                 break;
             }
             if st.captcha && !st.solved {
-                if !browser::solve_turnstile(page, ctx.settings.captcha_wait, &ctx.gate.attention, label).await {
+                if !page.captcha(ctx.settings.captcha_wait, &ctx.gate.attention, label).await {
                     return Err(ResolveError::Retry("Captcha wasn't solved in time".into()));
                 }
                 continue;
@@ -474,8 +491,8 @@ async fn flow(
                 if clicked.len() >= STEP2_MAX_CLICKS {
                     break;
                 }
-                let _ = eval::<serde_json::Value>(page, OVERLAY_JS, None).await;
-                if eval::<bool>(page, CLICK_JS, Some(trig.clone().into())).await.unwrap_or(false) {
+                let _ = ev::<serde_json::Value, _>(page, OVERLAY_JS, None).await;
+                if ev::<bool, _>(page, CLICK_JS, Some(trig.clone().into())).await.unwrap_or(false) {
                     clicked.insert(trig);
                 }
             }
@@ -486,7 +503,7 @@ async fn flow(
         }
         if retry == 0 {
             // A fresh widget instance sometimes clears a transient hard-fail.
-            let _ = page.execute(ReloadParams::default()).await;
+            page.reload().await;
             tokio::time::sleep(Duration::from_secs(2)).await;
         } else {
             return Err(ResolveError::Retry("Turnstile said 'Verification failed'".into()));

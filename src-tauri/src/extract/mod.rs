@@ -23,11 +23,47 @@ pub enum ResolveError {
     Retry(String),
 }
 
+/// What a provider flow needs from a browser page. Implemented by the external
+/// Chrome/Edge tab (CDP) and by the app's own WebView2 window, so one flow
+/// drives either.
+pub trait PageOps: Sync {
+    /// Call a JS function source with an optional JSON argument; the result as JSON.
+    fn eval_value(&self, func: &str, arg: Option<serde_json::Value>)
+        -> impl std::future::Future<Output = Option<serde_json::Value>> + Send;
+    fn goto(&self, url: &str) -> impl std::future::Future<Output = ()> + Send;
+    fn reload(&self) -> impl std::future::Future<Output = ()> + Send;
+    /// Get a Turnstile token, involving the user if it doesn't clear on its own.
+    fn captcha(&self, wait: u64, attention: &crate::engine::Attention, label: &str)
+        -> impl std::future::Future<Output = bool> + Send;
+    /// Put the page in front of the user (a Cloudflare check needs a human) or
+    /// take it away again. The external browser is always on screen.
+    fn show_to_user(&self, _on: bool) -> impl std::future::Future<Output = ()> + Send {
+        async {}
+    }
+}
+
+pub async fn ev<T: serde::de::DeserializeOwned, P: PageOps>(
+    page: &P,
+    func: &str,
+    arg: Option<serde_json::Value>,
+) -> Option<T> {
+    page.eval_value(func, arg).await.and_then(|v| serde_json::from_value(v).ok())
+}
+
 pub struct ExtractCtx {
     /// HTTP client for extraction calls: no redirect following.
     pub http: reqwest::Client,
     pub gate: Arc<BrowserGate>,
     pub settings: Settings,
+    /// Set inside the app; enables the built-in browser.
+    pub app: Option<tauri::AppHandle>,
+}
+
+impl ExtractCtx {
+    /// The app handle when pages should open in the built-in browser.
+    pub fn builtin(&self) -> Option<&tauri::AppHandle> {
+        self.app.as_ref().filter(|_| self.settings.builtin_browser)
+    }
 }
 
 pub fn extraction_client() -> reqwest::Client {

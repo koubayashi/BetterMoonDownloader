@@ -35,6 +35,9 @@ pub async fn resolve(ctx: &ExtractCtx, url: &str, label: &str) -> Result<Resolve
         Err(HttpOutcome::Dead) => return Err(ResolveError::Dead("File not found on fuckingfast".into())),
         Err(HttpOutcome::NeedsBrowser) => {}
     }
+    if let Some(app) = ctx.builtin() {
+        return crate::webview::resolve_fuckingfast(app, ctx, &id, label).await;
+    }
     browser_go(ctx, &id, label).await
 }
 
@@ -81,16 +84,16 @@ async fn http_go(ctx: &ExtractCtx, id: &str) -> Result<String, HttpOutcome> {
 }
 
 /// htmx owns the submit, so the `hx-post` element is what gets clicked.
-const CLICK_JS: &str = r#"() => {
+pub(crate) const CLICK_JS: &str = r#"() => {
     const el = document.querySelector('[hx-post*="/go"]');
     if (!el) return false;
     el.click();
     return true;
 }"#;
 
-const READY_JS: &str = r#"() => !!(window.turnstileToken || window.dlCleared)"#;
+pub(crate) const READY_JS: &str = r#"() => !!(window.turnstileToken || window.dlCleared)"#;
 
-const DEAD_JS: &str = r#"() => {
+pub(crate) const DEAD_JS: &str = r#"() => {
     const t = (document.body?.innerText || '').toLowerCase();
     return t.includes('file not found') || t.includes('has been removed') || t.includes('no longer available');
 }"#;

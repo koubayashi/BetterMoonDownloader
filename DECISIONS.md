@@ -63,6 +63,31 @@ Each entry: what was decided, why, and what we gave up. Newest decisions are app
 | G7 | Each group has a collapsible header (aggregate progress, speed, ETA, finish time), pause/resume/open-folder buttons, and a right-click menu that includes **"Download only this release"** (pause every other release and resume this one). A **Releases** list in the sidebar shows one release at a time with its own summary. | User: "pause one group, download another, resume it later". | Single-file releases show without a header, to avoid noise. |
 | G8 | ~~Inside a group, rows show `part1.rar`~~ **Replaced:** rows always show the **original filename**, trimmed in the middle when it's too long (`ExampleGame_--_fitgirl-re….part1.rar`) so the part number stays visible. Files on disk keep their exact original names (only Windows-illegal characters `<>:"/\|?*` are replaced). | User: "keep the original file names". | Very long names show an ellipsis in the middle. The full name is on hover. |
 
+## 5c. Built-in browser (v1.1, branch `feat/builtin-browser`)
+
+| # | Decision | Why | Trade-off |
+|---|----------|-----|-----------|
+| W1 | Resolve links in a **hidden window of the app's own WebView2** (the Edge engine built into Windows 10/11) instead of spawning an external Chrome/Edge over CDP. This is now the default; the external browser stays available as a setting. | User: "the user never has to worry about some particular browser being installed". No extra download, and no browser window popping up. | No trusted mouse input from inside a WebView, so a Turnstile box that won't clear on its own must be ticked by the user. It appears in an in-app window at that moment. |
+| W2 | **Don't bundle a browser.** | A light browser can't run Cloudflare Turnstile at all. Bundled Chromium adds 150–300 MB, and the original project measured unbranded/headless Chromium being rejected (Error 600010). WebView2 is already present and branded. | Depends on WebView2, which Windows ships and updates. |
+| W3 | One provider flow drives both browser types through a `PageOps` trait (eval, goto, reload, captcha, show_to_user). | The datanodes step1/step2/latch/trigger-chain logic is the hard-won part, so it should exist once. | A small trait layer. |
+| W4 | The file link is captured with Tauri's native hooks: `on_navigation` (top-level navigations), `on_download` (cancelled downloads) and `on_new_window` (all popups denied, a file link captured). Cookies come from `cookies_for_url` on a blocking thread, since it deadlocks on the WebView2 thread. | WebView2 has no per-request interception through Tauri, but every way the file link can leave the page goes through one of these hooks. | Images and fonts can't be blocked as the CDP path did, so a page uses slightly more bandwidth. |
+| W5 | The resolver window uses a **separate persistent profile** (`%LOCALAPPDATA%\BetterMoonDownloader\webview-profile`) and deletes the app's own `__TAURI__` globals before page scripts run. Remote pages get no IPC: the capabilities cover only the `main` window. | Keeps `cf_clearance` between links, removes an obvious fingerprint, and a hostile page can't call app commands. | — |
+| W6 | The window **stays hidden** and is shown only when Cloudflare needs a human: after 15 s on the interstitial, or after 10 s of Turnstile not clearing. It hides again afterwards. | In live tests it never had to appear. | — |
+
+**Live results (ExampleGame links, Oct 21 2026, built-in browser):**
+
+| Link | Path | Time | Range check |
+|---|---|---|---|
+| datanodes part 2 | WebView2, hidden | 21.2 s | `206` ✅ |
+| datanodes part 3 | WebView2, hidden | 19.8 s | `206` ✅ |
+| datanodes part 4 | normal app routing → WebView2 | 19.2 s | `206` ✅ (279 MB part) |
+| fuckingfast part 3 | WebView2 fallback, forced | 8.2 s | `206` ✅ |
+| *(v1 reference)* datanodes part 1 | external Edge over CDP | 31 s | `206` ✅ |
+
+The window never needed to be shown, and no captcha click was required in any run.
+
+Test hook: start the app with `BMD_PROBE="<links>"` set. It resolves those links through the built-in browser and writes `%APPDATA%\BetterMoonDownloader\probe.log`.
+
 ## 6. Build and distribution
 
 | # | Decision | Why | Trade-off |

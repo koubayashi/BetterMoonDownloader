@@ -39,6 +39,8 @@ pub struct Settings {
     pub auto_start: bool,
     /// Put each release (ExampleGame, ...) in its own subfolder of `out_dir`.
     pub release_folders: bool,
+    /// Resolve links in the app's own WebView2 window instead of an external Chrome/Edge.
+    pub builtin_browser: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +65,7 @@ impl Default for Settings {
             theme: "system".into(),
             auto_start: true,
             release_folders: true,
+            builtin_browser: true,
         }
     }
 }

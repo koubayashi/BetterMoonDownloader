@@ -196,6 +196,7 @@ pub struct Engine {
     limiter: Arc<RateLimiter>,
     extract_http: reqwest::Client,
     wake: Notify,
+    app: std::sync::OnceLock<tauri::AppHandle>,
 }
 
 #[derive(Serialize)]
@@ -411,7 +412,12 @@ impl Engine {
             limiter,
             extract_http: extract::extraction_client(),
             wake: Notify::new(),
+            app: std::sync::OnceLock::new(),
         })
+    }
+
+    pub fn set_app(&self, app: tauri::AppHandle) {
+        let _ = self.app.set(app);
     }
 
     pub fn settings(&self) -> Settings {
@@ -905,7 +911,7 @@ impl Engine {
         tauri::async_runtime::spawn(async move {
             let links_mode = s.mode == "links";
             let retries = s.retries;
-            let ctx = ExtractCtx { http: me.extract_http.clone(), gate: me.gate.clone(), settings: s };
+            let ctx = ExtractCtx { http: me.extract_http.clone(), gate: me.gate.clone(), settings: s, app: me.app.get().cloned() };
             let res = tokio::select! {
                 r = extract::resolve(&ctx, &url, &name) => Some(r),
                 _ = cancel.cancelled() => None,
