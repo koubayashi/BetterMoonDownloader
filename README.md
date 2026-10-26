@@ -34,6 +34,8 @@ Everything is on the [latest release](https://github.com/koubayashi/BetterMoonDo
 
 A single exe: no installer, no admin rights. Run it from anywhere. It needs Microsoft WebView2, which already ships with Windows 10 and 11.
 
+**Microsoft SmartScreen warning.** The exe isn't code-signed (a signing certificate costs money every year), so the first time you run it Windows may show *"Windows protected your PC"*. Click **More info** → **Run anyway**. It only asks once per version. If you'd rather check the file first, compare its SHA-256 with the one in the release notes (`Get-FileHash .\BetterMoonDownloader.exe` in PowerShell), or build it yourself from source.
+
 ### Linux: AppImage (portable)
 
 An AppImage is one file that runs on almost any 64-bit distro without installing. Linux doesn't let downloaded files run until you mark them as programs, so do that once:
@@ -81,19 +83,23 @@ To remove it later: `sudo apt remove better-moon-downloader` or `sudo dnf remove
 
 ## Features
 
-- **Releases, not just files.** Parts are grouped by release (e.g. **ExampleGame**) and saved to `<Save to>\ExampleGame\`. Each release has its own progress, speed, ETA and pause/resume.
+- **Releases, not just files.** Parts are grouped by release (e.g. **ExampleGame**) and saved to `<Save to>\ExampleGame\`. Each release has its own progress, speed, ETA and pause/resume. Companion files pasted with a release (FitGirl's `fg-selective-*.bin`, `fg-optional-*.bin`, `setup-fitgirl-*.bin`) stay in its folder.
+- **In progress first, finished below.** Live downloads sit at the top. Finished releases move to a separate **Finished** section and fold away. Long queues fold too, showing the next few files and "N more waiting". The summary card counts only unfinished work.
 - **Mirrors.** The same part listed on both fuckingfast and datanodes is downloaded once. The other link is kept as a backup and used automatically if the first fails, and the partial download carries over.
 - **Multi-connection, resumable downloads.** Up to 16 connections per file, with dynamic range splitting. Partial files survive restarts and crashes.
 - **Built-in browser.** Cloudflare-protected pages are resolved in a hidden browser window inside the app, so there's nothing else to install.
-- **Clear progress.** Files done, GB done, total speed, time left and the clock time the batch should finish.
+- **Clear progress.** Files done, GB done, total speed, time left and the clock time the batch should finish. Progress also shows on the taskbar button and in the window title, and a notification arrives when a release finishes.
+- **Warns before the disk fills.** A banner appears when what's left to download won't fit in the free space, and the Add links sheet shows how much room the target drive has.
+- **Open the archive when it's done.** A finished release's archive button opens part 1 in your archive program (WinRAR, 7-Zip…).
+- **Two ways to delete.** *Delete partial files* removes unfinished downloads and keeps finished files. *Delete all files* also moves finished files to the Recycle Bin (Trash on Linux), so you can still get them back. *Clear all* only removes finished entries from the list, with Undo.
 - **Light and dark mode**, following Windows or set by hand.
 
 ## Using it
 
 1. **Add links**: `Ctrl+N`, paste anywhere (`Ctrl+V`), drop one or more `.txt` files on the window, or use *Add links → Open .txt…*
-2. Each row shows the file, a moon that fills as it downloads, %, size done, speed and time left.
-3. **Right-click** a row (or select several with Ctrl/Shift) to pause, resume, retry, show in folder, copy links, or remove. Right-click a release header for **Download only this release**.
-   `Space` pauses or resumes the selection, `Del` removes it, and `Shift+Del` also deletes the partial file.
+2. Each release header has a moon that fills as it downloads. Each row shows the file, a progress bar, %, size done, speed and time left.
+3. **Right-click** a row (or select several with Ctrl/Shift) to pause, resume, retry, show in folder, open the archive, copy links, remove, or delete files. Right-click a release header for **Download only this release**.
+   Keyboard: `↑`/`↓` move through the list (`Shift` extends the selection, `Home`/`End` jump), `Enter` shows the file in its folder, `Space` pauses or resumes, `Del` removes from the list, and `Shift+Del` deletes the files too (finished ones go to the Recycle Bin).
 4. **Captchas.** If Cloudflare ever wants a click, a small "BetterMoonDownloader · verification" window appears with the checkbox, and the blue banner tells you so. Tick it and the download continues. You can switch to an external Chrome/Edge window in Settings.
 5. **Settings**: files at once, connections per file, speed limit, links-only mode (export direct links for another downloader), retries, browser tabs, captcha wait, browser path, datanodes premium API key (skips the browser), and proxies.
 
