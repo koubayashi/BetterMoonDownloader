@@ -220,6 +220,28 @@ function toggleGroup(g) {
   safeSet("bmd.opened", JSON.stringify([...opened]));
 }
 
+function makeSection(kind) {
+  const el = document.createElement("div");
+  el.className = "section";
+  el.dataset.kind = kind;
+  el.innerHTML = kind === "fin"
+    ? `<h2>Finished</h2><button class="btn btn-sm" data-clear>Clear all</button>`
+    : `<h2>In progress</h2>`;
+  return el;
+}
+
+// Finished releases only: parts already done in a release that's still
+// downloading belong to it and stay.
+function finishedIds() {
+  return groupsOf(state.jobs).filter(isFinished).flatMap((g) => g.jobs.map((j) => j.id));
+}
+async function clearFinished() {
+  const ids = finishedIds();
+  if (!ids.length) return toast("Nothing finished to clear");
+  await invoke("remove", { ids, deletePartial: false });
+  toast(`Cleared ${ids.length} finished file${ids.length === 1 ? "" : "s"} from the list. Files on disk are kept.`);
+}
+
 function makeFold() {
   const el = document.createElement("div");
   el.className = "fold";
@@ -323,10 +345,22 @@ function displayItems() {
   const q = state.query.trim().toLowerCase();
   // Only the mixed views fold finished parts; "Completed" shows them as they are.
   const foldable = !q && (state.filter === "all" || state.filter.startsWith("g:"));
+  // "In progress" above "Finished" in the everything view; other views are one kind already.
+  const sections = !q && state.filter === "all";
+  const anyFinished = sections && groupsOf(state.jobs).some(isFinished);
   const items = [];
+  let section = null;
   for (const g of orderedGroups()) {
     const vis = g.jobs.filter((j) => matchesFilter(j) && (!q || j.name.toLowerCase().includes(q) || j.group.toLowerCase().includes(q)));
     if (!vis.length) continue;
+    if (sections) {
+      const s = isFinished(g) ? "fin" : "live";
+      if (s !== section) {
+        // A lone "In progress" heading says nothing; it only appears above a Finished one.
+        if (anyFinished) items.push({ section: s });
+        section = s;
+      }
+    }
     if (g.jobs.length === 1) { items.push({ j: vis[0] }); continue; }
     items.push({ g });
     if (isCollapsed(g)) continue;
@@ -353,13 +387,14 @@ function renderList() {
   let prev = null;
   let reveal = null;
   for (const it of items) {
-    const key = it.g ? "g" + it.g.key : it.fold ? "f" + it.fold.key : it.j.id;
+    const key = it.section ? "s" + it.section : it.g ? "g" + it.g.key : it.fold ? "f" + it.fold.key : it.j.id;
     let el = state.rows.get(key);
-    if (!el) { el = it.g ? makeGroup() : it.fold ? makeFold() : makeRow(it.j); state.rows.set(key, el); }
-    if (it.g) patchGroup(el, it.g);
+    if (!el) { el = it.section ? makeSection(it.section) : it.g ? makeGroup() : it.fold ? makeFold() : makeRow(it.j); state.rows.set(key, el); }
+    if (it.section) { /* static */ }
+    else if (it.g) patchGroup(el, it.g);
     else if (it.fold) patchFold(el, it.fold, it.done);
     else { patchRow(el, it.j); el.classList.toggle("in-group", !!it.inGroup); }
-    if (!reveal && state.reveal && !it.fold && (it.g ? it.g.name : it.j.group) === state.reveal) reveal = el;
+    if (!reveal && state.reveal && !it.fold && !it.section && (it.g ? it.g.name : it.j.group) === state.reveal) reveal = el;
     seen.add(key);
     const want = prev ? prev.nextSibling : list.firstChild;
     if (want !== el) list.insertBefore(el, want);
@@ -368,7 +403,7 @@ function renderList() {
   for (const [key, el] of state.rows) {
     if (!seen.has(key)) {
       el.remove();
-      const alive = typeof key === "number" ? state.jobs.some((j) => j.id === key) : state.jobs.some((j) => key.slice(1) === gkey(j));
+      const alive = typeof key === "number" ? state.jobs.some((j) => j.id === key) : key[0] === "s" || state.jobs.some((j) => key.slice(1) === gkey(j));
       if (!alive) state.rows.delete(key);
     }
   }
@@ -399,20 +434,47 @@ function renderList() {
 }
 
 // ── summary ────────────────────────────────────────────────────────────────
+// The releases still being worked on. Finished releases are history and stay
+// out of the summary, so its bar answers "how far along is what I'm downloading".
+const isFinished = (g) => g.jobs.every((j) => j.state === "done");
+function liveGroups() { return orderedGroups().filter((g) => !isFinished(g)); }
+
 function renderSummary() {
-  // A release view summarises that release; everything else, the whole queue.
-  const s = state.filter.startsWith("g:") ? statsOf(state.jobs.filter(matchesFilter)) : state.stats;
   const box = $("#summary");
-  if (!s || s.count === 0 || state.filter === "log") { box.hidden = true; return; }
+  if (!state.jobs.length || state.filter === "log") { box.hidden = true; return; }
   box.hidden = false;
-  const frac = s.bytesTotal ? s.bytesDone / s.bytesTotal : s.done / s.count;
-  $("#sumMoon").innerHTML = moonSvg(s.done === s.count ? 1 : frac, 24);
+  // A release view summarises that release; everything else, what's unfinished.
+  const groups = state.filter.startsWith("g:") ? [groupByKey(state.filter.slice(2))].filter(Boolean) : liveGroups();
+  const idle = groups.length === 0;
+  box.classList.toggle("is-idle", idle);
+  $("#sumOpen").hidden = !idle;
+  $("#sumBar").hidden = idle;
+  if (idle) {
+    // Nothing left: point at what finished last.
+    const last = orderedGroups().map((g) => ({ g, at: Math.max(...g.jobs.map((j) => j.finishedAt || 0)) })).sort((a, b) => b.at - a.at)[0];
+    state.lastFolder = last && last.g.folder;
+    $("#sumMoon").innerHTML = moonSvg(1, 24);
+    $("#sumLine1").textContent = "Everything is downloaded";
+    const size = last ? last.g.jobs.reduce((a, j) => a + (j.total || 0), 0) : 0;
+    $("#sumLine2").innerHTML = last
+      ? `Last finished: ${esc(last.g.jobs.length === 1 ? last.g.jobs[0].name : last.g.name)}${size ? " · " + bytes(size) : ""}${last.at ? " · " + finishClock(last.at) : ""}`
+      : "";
+    drawTide();
+    return;
+  }
+  const s = statsOf(groups.flatMap((g) => g.jobs));
+  const frac = groupFrac(s);
+  $("#sumMoon").innerHTML = moonSvg(frac, 24);
 
   const left = s.count - s.done - s.failed;
+  // Name the release that's in front; the rest is a count.
+  const lead = esc(groups[0].jobs.length === 1 ? groups[0].jobs[0].name : groups[0].name);
+  const title = groups.length === 1 ? lead : `${lead} <span class="soft">+ ${groups.length - 1} more</span>`;
+  // Sizes not known yet count as the average known size: "~40 GB", not "at least 27 GB".
   const sizeTxt = s.bytesTotal
-    ? ` <span class="soft">·</span> ${bytes(s.bytesDone)} <span class="soft">of ${s.unknownSizes ? "at least " : ""}${bytes(s.bytesTotal)}</span>`
+    ? ` <span class="soft">· ${bytes(s.bytesDone)} of ${s.unknownSizes ? "~" : ""}${bytes(expectedBytes(s))} · ${Math.floor(frac * 100)}%</span>`
     : "";
-  $("#sumLine1").innerHTML = `${s.done} of ${s.count} files done${sizeTxt}`;
+  $("#sumLine1").innerHTML = title + sizeTxt;
 
   let live;
   if (s.speed > 1 && s.eta) {
@@ -428,6 +490,7 @@ function renderSummary() {
     live = `${left} file${left === 1 ? "" : "s"} waiting`;
   }
   if (s.failed && left) live += ` · <span style="color:var(--danger)">${s.failed} failed</span>`;
+  live += ` · ${s.done} of ${s.count} files`;
   $("#sumLine2").innerHTML = live;
   $("#sumBar i").style.width = (frac * 100).toFixed(2) + "%";
   drawTide();
@@ -618,13 +681,17 @@ function renderReleases() {
     if (state.filter.startsWith("g:") && !groupByKey(state.filter.slice(2))) setFilter("all");
     return;
   }
-  const html = groups.map((g) => {
+  // Live releases on top; finished ones below a rule, quieter.
+  const firstDone = groups.findIndex(isFinished);
+  const html = groups.map((g, i) => {
+    const sep = i === firstDone && i > 0 ? `<div class="filters-sep"></div>` : "";
     const s = statsOf(g.jobs);
     const frac = groupFrac(s);
     const pct = s.done === s.count ? "done" : Math.floor(frac * 100) + "%";
     const active = state.filter === "g:" + g.key ? " is-active" : "";
     const paused = groupMode(s) === "resume" ? " is-paused" : "";
-    return `<button class="filter release${active}${paused}" data-filter="g:${esc(g.key)}" title="${esc(g.folder)}">
+    const fin = isFinished(g) ? " is-done" : "";
+    return `${sep}<button class="filter release${active}${paused}${fin}" data-filter="g:${esc(g.key)}" title="${esc(g.folder)}">
       <svg class="moon" viewBox="0 0 20 20">${moonSvg(s.done === s.count ? 1 : frac)}</svg><span>${esc(g.name)}</span><b>${pct}</b></button>`;
   }).join("");
   if (box.dataset.html !== html) { box.dataset.html = html; box.innerHTML = html; }
@@ -680,6 +747,7 @@ $("#list").addEventListener("dblclick", (e) => {
 });
 
 $("#list").addEventListener("click", (e) => {
+  if (e.target.closest("[data-clear]")) return clearFinished().catch(toastErr).then(poll);
   const gbtn = e.target.closest("[data-gact]");
   if (gbtn) return groupAction(gbtn.dataset.gact, gbtn.closest(".group").dataset.key);
   const btn = e.target.closest("[data-act]");
@@ -763,14 +831,14 @@ $("#moreBtn").addEventListener("click", (e) => {
   const s = state.stats || {};
   openMenu(r.right - 240, r.bottom + 6, [
     ["retry-failed", "retry", "Retry all failed" + (s.failed ? ` (${s.failed})` : "")],
-    ["clear-done", "check", "Clear completed from list"],
+    ["clear-done", "check", "Clear finished releases"],
     "-",
     ["export", "file", "Export direct links…"],
     ["open-out", "folder", "Open download folder"],
   ], async (act) => {
     try {
       if (act === "retry-failed") await invoke("retry_failed");
-      if (act === "clear-done") await invoke("clear_finished");
+      if (act === "clear-done") await clearFinished();
       if (act === "open-out") await invoke("open_folder", { path: state.settings.outDir });
       if (act === "export") await exportLinks();
     } catch (err) { toastErr(err); }
@@ -812,7 +880,8 @@ $("#noticeDismiss").addEventListener("click", () => invoke("dismiss_notice").the
 $("#showBrowser").addEventListener("click", () => invoke("show_browser").catch(toastErr));
 $("#diskOpen").addEventListener("click", () => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
 $("#diskResume").addEventListener("click", () => invoke("resume_all").then(poll).catch(toastErr));
-$("#openOut").addEventListener("click", () => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
+$("#sumOpen").addEventListener("click", () => invoke("open_folder", { path: state.lastFolder || state.settings.outDir }).catch(toastErr));
+$("#openOut").addEventListener("click",() => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
 
 // Window controls (undecorated window).
 if (inApp) {
@@ -1074,7 +1143,9 @@ function mockInvoke(cmd, args = {}) {
       error: i === 33 ? "File not found on datanodes" : null, note: null, hasDirect: stateOf(i) === "done", addedAt: t0 - (3 - batch) * 3600000,
       finishedAt: stateOf(i) === "done" ? t0 - (34 - i) * 120000 : null,
     }));
-    jobs.forEach((j) => { j.done = j.state === "done" ? j.total : j.state === "paused" ? j.total * 0.37 : j.state === "downloading" ? j.total * (0.15 + 0.17 * (j.id % 4)) : 0; });
+    // ?idle previews the "everything is downloaded" state.
+    if (location.search.includes("idle")) jobs.forEach((j) => { j.state = "done"; j.total ||= 1_048_576_000; j.error = null; j.finishedAt ||= t0; });
+    jobs.forEach((j) => { j.done =j.state === "done" ? j.total : j.state === "paused" ? j.total * 0.37 : j.state === "downloading" ? j.total * (0.15 + 0.17 * (j.id % 4)) : 0; });
     return { jobs, history: [], settings: { outDir: "C:\\Users\\you\\Downloads\\BetterMoon", maxActive: 4, connections: 4, maxResolving: 3, retries: 3, browserPages: 3, captchaWait: 240, browserPath: "", dnApiKey: "", proxies: "", mode: "download", stallKiller: true, speedLimitMbs: 0, theme: "system", autoStart: true, releaseFolders: true, builtinBrowser: true } };
   })());
   switch (cmd) {

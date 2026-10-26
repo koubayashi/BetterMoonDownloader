@@ -207,7 +207,7 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 
 /* ── Batch summary ───────────────────────────────────────── */
 .summary {
-  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 18px;
+  display: grid; grid-template-columns: auto 1fr; grid-auto-flow: column; grid-auto-columns: auto; align-items: center; gap: 18px;
   margin: 2px 20px 12px; padding: 14px 18px;
   border-radius: var(--r-lg); background: var(--raised);
   box-shadow: 0 0 0 1px var(--line-soft), 0 1px 2px oklch(from var(--ink) l c h / 0.04);
@@ -221,6 +221,8 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .summary-live b { color: var(--accent); font-weight: 600; }
 .summary-live .clock { color: var(--ink); font-weight: 600; }
 .bar-lg { margin-top: 10px; height: 6px; }
+/* Nothing left to do: no bar, no speed chart, just where the files are. */
+.summary.is-idle .tide { display: none; }
 
 .tide { margin: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .tide canvas { width: 240px; height: 64px; display: block; }
@@ -341,6 +343,22 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .fold-text { font-variant-numeric: tabular-nums; }
 .fold-hint { margin-left: auto; color: var(--ink-3); font-size: 12px; opacity: 0; transition: opacity .12s ease; }
 .fold:hover .fold-hint { opacity: 1; }
+
+/* "In progress" / "Finished": what's moving, then what's on disk. */
+.section { display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 12px; margin-top: 14px; }
+.section:first-child { margin-top: 0; }
+.section h2 { margin: 0; font: 600 12px/1 var(--font); color: var(--ink-2); }
+.section + .group, .section + .row { margin-top: 0; }
+
+/* A finished release is a single quiet line: its bar is always full, so it goes. */
+.group[data-state="done"] { height: 46px; background: transparent; }
+.group[data-state="done"]:hover { background: var(--hover); }
+.group[data-state="done"] .bar, .group[data-state="done"] .pct { visibility: hidden; }
+.group[data-state="done"] .name { font-weight: 500; }
+.group[data-state="done"] + .group[data-state="done"] { margin-top: 2px; }
+
+.release.is-done { opacity: .7; }
+.release.is-done:hover, .release.is-done.is-active { opacity: 1; }
 
 /* Just added: one soft wash so the eye lands on it. */
 .is-new { animation: arrived 1.8s var(--ease); }
