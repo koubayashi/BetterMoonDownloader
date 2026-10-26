@@ -225,7 +225,7 @@ function makeSection(kind) {
   el.className = "section";
   el.dataset.kind = kind;
   el.innerHTML = kind === "fin"
-    ? `<h2>Finished</h2><button class="btn btn-sm" data-clear>Clear all</button>`
+    ? `<h2>Finished</h2><span class="section-acts"><button class="btn btn-sm" data-clear title="Remove from the list; the files stay on disk">Clear all</button><button class="btn btn-sm btn-danger" data-purge title="Remove from the list and move the files to the Recycle Bin"><svg><use href="#i-trash"/></svg><span>Delete files…</span></button></span>`
     : `<h2>In progress</h2>`;
   return el;
 }
@@ -669,7 +669,7 @@ function groupMenu(x, y, key) {
     ["copy-direct", "copy", "Copy direct links"],
     "-",
     ["remove", "x", "Remove release from list"],
-    ["remove-delete", "trash", "Remove and delete partial files", "danger"],
+    ["remove-delete", "trash", "Delete from disk…", "danger"],
   ], (act) => groupAction(act, key));
 }
 
@@ -748,6 +748,7 @@ $("#list").addEventListener("dblclick", (e) => {
 
 $("#list").addEventListener("click", (e) => {
   if (e.target.closest("[data-clear]")) return clearFinished().catch(toastErr).then(poll);
+  if (e.target.closest("[data-purge]")) return deleteFromDisk(finishedIds()).catch(toastErr).then(poll);
   const gbtn = e.target.closest("[data-gact]");
   if (gbtn) return groupAction(gbtn.dataset.gact, gbtn.closest(".group").dataset.key);
   const btn = e.target.closest("[data-act]");
@@ -772,16 +773,32 @@ async function rowAction(act, ids) {
   poll();
 }
 
-async function removeJobs(ids, deletePartial) {
-  if (deletePartial && inApp) {
+async function removeJobs(ids, deleteFiles) {
+  if (deleteFiles) return deleteFromDisk(ids);
+  await invoke("remove", { ids, deletePartial: false });
+  ids.forEach((id) => state.selected.delete(id));
+}
+
+// Finished files go to the Recycle Bin (recoverable); partial downloads are
+// deleted outright, since they're useless on their own.
+async function deleteFromDisk(ids) {
+  if (!ids.length) return toast("Nothing to delete");
+  const jobs = state.jobs.filter((j) => ids.includes(j.id));
+  const fin = jobs.filter((j) => j.state === "done").length, part = jobs.length - fin;
+  const bin = state.platform && state.platform.nativeFrame ? "Trash" : "Recycle Bin";
+  const n = (k, w) => `${k} ${w}${k === 1 ? "" : "s"}`;
+  const what = [fin && `move ${n(fin, "finished file")} to the ${bin}`, part && `delete ${n(part, "partial download")}`].filter(Boolean).join(" and ");
+  if (inApp) {
     const ok = await invoke("confirm", {
-      message: `Remove ${ids.length === 1 ? "this download" : ids.length + " downloads"} and delete the partial file${ids.length === 1 ? "" : "s"}? Finished files are kept.`,
-      okLabel: "Remove and delete",
+      message: `Remove from the list, and ${what}?` + (fin ? ` You can restore finished files from the ${bin}.` : ""),
+      okLabel: "Delete",
     });
     if (!ok) return;
   }
-  await invoke("remove", { ids, deletePartial });
+  const r = await invoke("delete_files", { ids });
   ids.forEach((id) => state.selected.delete(id));
+  const done = [r.trashed && `${n(r.trashed, "file")} moved to the ${bin}`, part && `${n(part, "partial download")} deleted`].filter(Boolean).join(", ");
+  toast(r.failed ? `${n(r.failed, "file")} couldn't be moved. Is it open in another program?` : done || "Deleted");
 }
 
 $("#list").addEventListener("contextmenu", (e) => {
@@ -806,7 +823,7 @@ $("#list").addEventListener("contextmenu", (e) => {
     ["copy-direct", "copy", "Copy direct link" + (ids.length > 1 ? "s" : "")],
     "-",
     ["remove", "x", "Remove from list" + many, "", "Del"],
-    ["remove-delete", "trash", "Remove and delete partial file", "danger"],
+    ["remove-delete", "trash", "Delete from disk…" + many, "danger", "Shift+Del"],
   ], (act) => rowAction(act, ids));
 });
 
@@ -832,6 +849,7 @@ $("#moreBtn").addEventListener("click", (e) => {
   openMenu(r.right - 240, r.bottom + 6, [
     ["retry-failed", "retry", "Retry all failed" + (s.failed ? ` (${s.failed})` : "")],
     ["clear-done", "check", "Clear finished releases"],
+    ["purge-done", "trash", "Delete finished files…", "danger"],
     "-",
     ["export", "file", "Export direct links…"],
     ["open-out", "folder", "Open download folder"],
@@ -839,6 +857,7 @@ $("#moreBtn").addEventListener("click", (e) => {
     try {
       if (act === "retry-failed") await invoke("retry_failed");
       if (act === "clear-done") await clearFinished();
+      if (act === "purge-done") await deleteFromDisk(finishedIds());
       if (act === "open-out") await invoke("open_folder", { path: state.settings.outDir });
       if (act === "export") await exportLinks();
     } catch (err) { toastErr(err); }
@@ -1181,6 +1200,11 @@ function mockInvoke(cmd, args = {}) {
           queued: c((j) => ["queued", "ready"].includes(j.state)), paused: c((j) => j.state === "paused"), bytesDone, bytesTotal, unknownSizes: unknown, speed,
           eta: speed ? (bytesTotal - bytesDone + unknown * avg) / speed : null, etaEstimated: unknown > 0 },
       });
+    }
+    case "delete_files": case "remove": {
+      const before = m.jobs.length;
+      m.jobs = m.jobs.filter((j) => !args.ids.includes(j.id));
+      return Promise.resolve(cmd === "remove" ? null : { trashed: before - m.jobs.length, failed: 0 });
     }
     default: return Promise.resolve(cmd === "direct_links" || cmd === "source_links" ? [] : null);
   }

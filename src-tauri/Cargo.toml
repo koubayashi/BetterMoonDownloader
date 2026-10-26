@@ -35,6 +35,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 dirs = "5"
 window-vibrancy = "0.8"
 log = "0.4"
+trash = "5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Security_Cryptography"] }

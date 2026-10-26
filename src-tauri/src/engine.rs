@@ -264,6 +264,13 @@ pub struct AddResult {
     groups: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteResult {
+    trashed: usize,
+    failed: usize,
+}
+
 /// What a pasted text would turn into, before anything is queued.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -707,6 +714,57 @@ impl Engine {
             g.dirty = true;
         }
         self.drop_removed();
+    }
+
+    /// Remove jobs from the list and their files from disk. Finished files go
+    /// to the Recycle Bin (Trash on Linux), so a slip can be undone; partial
+    /// downloads are deleted as in `remove(.., true)`. A finished file that
+    /// can't be moved (open in another program) stays in the list.
+    pub fn delete_files(&self, ids: &[u64]) -> DeleteResult {
+        const BIN: &str = if cfg!(windows) { "Recycle Bin" } else { "Trash" };
+        let (finished, unfinished): (Vec<(u64, PathBuf, Option<PathBuf>)>, Vec<u64>) = {
+            let g = self.inner.lock().unwrap();
+            let mut fin = Vec::new();
+            let mut rest = Vec::new();
+            for j in g.jobs.iter().filter(|j| ids.contains(&j.rec.id)) {
+                if j.rec.state == State::Done {
+                    // Only a release folder this app made is a candidate for tidying up.
+                    let folder = (!j.rec.subfolder.is_empty()).then(|| j.rec.folder());
+                    fin.push((j.rec.id, j.rec.dest(), folder));
+                } else {
+                    rest.push(j.rec.id);
+                }
+            }
+            (fin, rest)
+        };
+        let mut res = DeleteResult { trashed: 0, failed: 0 };
+        let mut gone = unfinished;
+        let mut folders = Vec::new();
+        for (id, dest, folder) in finished {
+            // Already gone from disk (deleted by hand): nothing to move.
+            let ok = !dest.exists() || trash::delete(&dest).is_ok();
+            if ok {
+                res.trashed += 1;
+                gone.push(id);
+                folders.extend(folder);
+            } else {
+                res.failed += 1;
+            }
+        }
+        self.remove(&gone, true);
+        folders.sort();
+        folders.dedup();
+        for f in folders {
+            // Fails, harmlessly, unless the folder is now empty.
+            let _ = std::fs::remove_dir(f);
+        }
+        if res.trashed > 0 {
+            self.log("info", format!("Moved {} finished file(s) to the {BIN}", res.trashed));
+        }
+        if res.failed > 0 {
+            self.log("warn", format!("{} file(s) couldn't be moved to the {BIN}; they may be open in another program", res.failed));
+        }
+        res
     }
 
     pub fn dismiss_notice(&self) {

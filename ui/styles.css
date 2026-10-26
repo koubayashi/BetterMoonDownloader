@@ -349,6 +349,10 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .section:first-child { margin-top: 0; }
 .section h2 { margin: 0; font: 600 12px/1 var(--font); color: var(--ink-2); }
 .section + .group, .section + .row { margin-top: 0; }
+.section-acts { display: flex; gap: 6px; }
+.btn-danger { color: var(--danger); }
+.btn-danger svg { width: 14px; height: 14px; }
+.btn-danger:hover { background: var(--danger-soft); border-color: oklch(from var(--danger) l c h / 0.35); }
 
 /* A finished release is a single quiet line: its bar is always full, so it goes. */
 .group[data-state="done"] { height: 46px; background: transparent; }

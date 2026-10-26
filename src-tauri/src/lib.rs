@@ -168,6 +168,13 @@ fn remove(eng: Eng, ids: Vec<u64>, delete_partial: bool) {
     eng.remove(&ids, delete_partial)
 }
 
+/// Off the UI thread: moving dozens of files to the Recycle Bin takes a moment.
+#[tauri::command]
+async fn delete_files(eng: State<'_, Arc<Engine>>, ids: Vec<u64>) -> Result<engine::DeleteResult, String> {
+    let eng = Arc::clone(&eng);
+    tauri::async_runtime::spawn_blocking(move || eng.delete_files(&ids)).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn clear_finished(eng: Eng) {
     eng.clear_finished()
@@ -352,6 +359,7 @@ pub fn run() {
             resume_all,
             retry_failed,
             remove,
+            delete_files,
             clear_finished,
             dismiss_notice,
             get_settings,
