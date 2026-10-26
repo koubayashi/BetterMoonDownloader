@@ -52,12 +52,13 @@ function duration(s) {
   if (h) return h + "h " + String(m % 60).padStart(2, "0") + "m";
   return m + "m " + String(s % 60).padStart(2, "0") + "s";
 }
-function humanLeft(s) {
+function humanLeft(s, rough) {
+  const about = rough ? "roughly " : "about ";
   if (s < 50) return "less than a minute left";
-  if (s < 90) return "about a minute left";
-  if (s < 3600) return "about " + Math.round(s / 60) + " min left";
+  if (s < 90) return about + "a minute left";
+  if (s < 3600) return about + Math.round(s / 60) + " min left";
   const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-  return "about " + h + " h" + (m ? " " + m + " min" : "") + " left";
+  return about + h + " h" + (m ? " " + m + " min" : "") + " left";
 }
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 function finishClock(ms) {
@@ -210,6 +211,30 @@ function patchRow(el, j) {
 
 // ── group headers ──────────────────────────────────────────────────────────
 const collapsed = new Set(JSON.parse(safeGet("bmd.collapsed") || "[]"));
+const opened = new Set(JSON.parse(safeGet("bmd.opened") || "[]"));
+const doneOpen = new Set();
+function toggleGroup(g) {
+  const k = g.key;
+  if (isCollapsed(g)) { collapsed.delete(k); opened.add(k); } else { collapsed.add(k); opened.delete(k); }
+  safeSet("bmd.collapsed", JSON.stringify([...collapsed]));
+  safeSet("bmd.opened", JSON.stringify([...opened]));
+}
+
+function makeFold() {
+  const el = document.createElement("div");
+  el.className = "fold";
+  el.innerHTML = `<svg class="chev" viewBox="0 0 20 20"><path d="M7.5 5l5 5-5 5"/></svg><svg class="ok-ic"><use href="#i-check"/></svg><span class="fold-text"></span><span class="fold-hint"></span>`;
+  el._ = { text: $(".fold-text", el), hint: $(".fold-hint", el), last: {} };
+  return el;
+}
+function patchFold(el, g, done) {
+  const open = doneOpen.has(g.key);
+  el.dataset.key = g.key;
+  el.classList.toggle("is-open", open);
+  const size = done.reduce((a, j) => a + (j.total || 0), 0);
+  set(el._.text, "text", el._.last, `${done.length} finished${size ? " · " + bytes(size) : ""}`);
+  set(el._.hint, "hint", el._.last, open ? "Hide" : "Show");
+}
 function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function safeSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 
@@ -234,13 +259,18 @@ function groupMode(s) {
   return "done";
 }
 
+// Files with no size yet count as the average known size, so a release
+// doesn't read 90% done while half its parts haven't started.
+const expectedBytes = (s) => s.bytesTotal + (s.unknownSizes * s.bytesTotal) / Math.max(1, s.count - s.unknownSizes);
+const groupFrac = (s) => s.bytesTotal ? s.bytesDone / expectedBytes(s) : s.done / s.count;
+
 function patchGroup(el, g) {
   const p = el._, c = p.last, s = statsOf(g.jobs);
   el.dataset.key = g.key;
-  const frac = s.bytesTotal ? s.bytesDone / (s.bytesTotal + (s.unknownSizes * s.bytesTotal) / Math.max(1, s.count - s.unknownSizes)) : s.done / s.count;
+  const frac = groupFrac(s);
   const mode = groupMode(s);
   el.dataset.state = s.active ? "downloading" : mode === "done" ? (s.failed ? "failed" : "done") : s.paused && !s.queued ? "paused" : "queued";
-  el.classList.toggle("is-collapsed", collapsed.has(g.key));
+  el.classList.toggle("is-collapsed", isCollapsed(g));
   const moonKey = Math.round(frac * 40);
   if (c.moon !== moonKey) { c.moon = moonKey; p.moon.innerHTML = moonSvg(s.done === s.count ? 1 : frac); }
   set(p.name, "name", c, g.name);
@@ -264,7 +294,7 @@ function patchGroup(el, g) {
   const w = (frac * 100).toFixed(1) + "%";
   if (c.w !== w) { c.w = w; p.bar.style.width = w; }
   set(p.pct, "pct", c, Math.floor(frac * 100) + "%");
-  set(p.size, "size", c, s.bytesTotal ? (s.done === s.count ? bytes(s.bytesTotal) : `${bytes(s.bytesDone)} / ${s.unknownSizes ? "~" : ""}${bytes(s.bytesTotal + (s.unknownSizes * s.bytesTotal) / Math.max(1, s.count - s.unknownSizes))}`) : "—");
+  set(p.size, "size", c, s.bytesTotal ? (s.done === s.count ? bytes(s.bytesTotal) : `${bytes(s.bytesDone)} / ${s.unknownSizes ? "~" : ""}${bytes(expectedBytes(s))}`) : "—");
   set(p.speed, "speed", c, s.speed > 1 ? rate(s.speed) : "");
   set(p.eta, "eta", c, s.speed > 1 ? duration(s.eta) : "");
   const b = (act, icon, title) => `<button class="icon-btn" data-gact="${act}" title="${title}"><svg><use href="#i-${icon}"/></svg></button>`;
@@ -273,16 +303,41 @@ function patchGroup(el, g) {
     + b("folder", "folder", "Open folder"), true);
 }
 
+// Releases that are moving come first, finished ones sink; the newest paste
+// leads its tier, so it's on screen right after adding it.
+function groupRank(s) { return s.active ? 0 : s.queued ? 1 : s.paused || s.failed ? 2 : 3; }
+function orderedGroups() {
+  return groupsOf(state.jobs)
+    .map((g) => ({ g, rank: groupRank(statsOf(g.jobs)), added: Math.max(...g.jobs.map((j) => j.addedAt || 0)) }))
+    .sort((a, b) => a.rank - b.rank || b.added - a.added)
+    .map((x) => x.g);
+}
+
+// A finished release folds itself away unless it was opened by hand.
+const isCollapsed = (g) => collapsed.has(g.key) || (!opened.has(g.key) && g.jobs.every((j) => j.state === "done"));
+
+// Inside a release, what needs watching sits on top; part order holds within each state.
+const ROW_RANK = { downloading: 0, resolving: 0, failed: 1, ready: 2, queued: 2, paused: 3, done: 4 };
+
 function displayItems() {
   const q = state.query.trim().toLowerCase();
+  // Only the mixed views fold finished parts; "Completed" shows them as they are.
+  const foldable = !q && (state.filter === "all" || state.filter.startsWith("g:"));
   const items = [];
-  for (const g of groupsOf(state.jobs)) {
+  for (const g of orderedGroups()) {
     const vis = g.jobs.filter((j) => matchesFilter(j) && (!q || j.name.toLowerCase().includes(q) || j.group.toLowerCase().includes(q)));
     if (!vis.length) continue;
-    if (g.jobs.length > 1) {
-      items.push({ g });
-      if (!collapsed.has(g.key)) vis.forEach((j) => items.push({ j, inGroup: true }));
-    } else items.push({ j: vis[0] });
+    if (g.jobs.length === 1) { items.push({ j: vis[0] }); continue; }
+    items.push({ g });
+    if (isCollapsed(g)) continue;
+    const sorted = vis.slice().sort((a, b) => ROW_RANK[a.state] - ROW_RANK[b.state]);
+    const rest = sorted.filter((j) => j.state !== "done");
+    const done = foldable && rest.length ? sorted.filter((j) => j.state === "done") : [];
+    for (const j of done.length ? rest : sorted) items.push({ j, inGroup: true });
+    if (done.length) {
+      items.push({ fold: g, done });
+      if (doneOpen.has(g.key)) done.forEach((j) => items.push({ j, inGroup: true }));
+    }
   }
   return items;
 }
@@ -296,12 +351,15 @@ function renderList() {
   const items = displayItems();
   const seen = new Set();
   let prev = null;
+  let reveal = null;
   for (const it of items) {
-    const key = it.g ? "g" + it.g.key : it.j.id;
+    const key = it.g ? "g" + it.g.key : it.fold ? "f" + it.fold.key : it.j.id;
     let el = state.rows.get(key);
-    if (!el) { el = it.g ? makeGroup() : makeRow(it.j); state.rows.set(key, el); }
+    if (!el) { el = it.g ? makeGroup() : it.fold ? makeFold() : makeRow(it.j); state.rows.set(key, el); }
     if (it.g) patchGroup(el, it.g);
+    else if (it.fold) patchFold(el, it.fold, it.done);
     else { patchRow(el, it.j); el.classList.toggle("in-group", !!it.inGroup); }
+    if (!reveal && state.reveal && !it.fold && (it.g ? it.g.name : it.j.group) === state.reveal) reveal = el;
     seen.add(key);
     const want = prev ? prev.nextSibling : list.firstChild;
     if (want !== el) list.insertBefore(el, want);
@@ -310,9 +368,15 @@ function renderList() {
   for (const [key, el] of state.rows) {
     if (!seen.has(key)) {
       el.remove();
-      const alive = typeof key === "number" ? state.jobs.some((j) => j.id === key) : state.jobs.some((j) => "g" + gkey(j) === key);
+      const alive = typeof key === "number" ? state.jobs.some((j) => j.id === key) : state.jobs.some((j) => key.slice(1) === gkey(j));
       if (!alive) state.rows.delete(key);
     }
+  }
+  // Just added: bring the release into view and mark it once.
+  if (reveal) {
+    state.reveal = null;
+    reveal.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    reveal.classList.remove("is-new"); void reveal.offsetWidth; reveal.classList.add("is-new");
   }
   for (const id of [...state.selected]) if (!state.jobs.some((j) => j.id === id)) state.selected.delete(id);
   const jobs = items;
@@ -353,7 +417,7 @@ function renderSummary() {
   let live;
   if (s.speed > 1 && s.eta) {
     const at = finishClock(Date.now() + s.eta * 1000);
-    live = `<b>${rate(s.speed)}</b> · ${s.etaEstimated ? "roughly " : ""}${humanLeft(s.eta)} · finishes around <span class="clock">${at}</span>`;
+    live = `<b>${rate(s.speed)}</b> · ${humanLeft(s.eta, s.etaEstimated)} · finishes around <span class="clock">${at}</span>`;
   } else if (s.active) {
     live = s.speed > 1 ? `<b>${rate(s.speed)}</b> · working out the time left…` : `Getting download links… ${left} to go`;
   } else if (left === 0) {
@@ -548,7 +612,7 @@ function groupMenu(x, y, key) {
 
 function renderReleases() {
   const box = $("#releases");
-  const groups = groupsOf(state.jobs).filter((g) => g.jobs.length > 1);
+  const groups = orderedGroups().filter((g) => g.jobs.length > 1);
   $("#relSection").hidden = groups.length < 2;
   if (groups.length < 2) {
     if (state.filter.startsWith("g:") && !groupByKey(state.filter.slice(2))) setFilter("all");
@@ -556,7 +620,7 @@ function renderReleases() {
   }
   const html = groups.map((g) => {
     const s = statsOf(g.jobs);
-    const frac = s.bytesTotal ? s.bytesDone / s.bytesTotal : s.done / s.count;
+    const frac = groupFrac(s);
     const pct = s.done === s.count ? "done" : Math.floor(frac * 100) + "%";
     const active = state.filter === "g:" + g.key ? " is-active" : "";
     const paused = groupMode(s) === "resume" ? " is-paused" : "";
@@ -581,9 +645,15 @@ $("#list").addEventListener("pointerdown", (e) => {
   const grp = e.target.closest(".group");
   if (grp) {
     if (e.button !== 0 || e.target.closest(".c-act")) return;
-    const k = grp.dataset.key;
-    collapsed.has(k) ? collapsed.delete(k) : collapsed.add(k);
-    safeSet("bmd.collapsed", JSON.stringify([...collapsed]));
+    const g = groupByKey(grp.dataset.key);
+    if (g) { toggleGroup(g); renderList(); }
+    return;
+  }
+  const fold = e.target.closest(".fold");
+  if (fold) {
+    if (e.button !== 0) return;
+    const k = fold.dataset.key;
+    doneOpen.has(k) ? doneOpen.delete(k) : doneOpen.add(k);
     renderList();
     return;
   }
@@ -852,6 +922,11 @@ $("#addSheet").addEventListener("submit", async (e) => {
   $("#addText").value = "";
   const extra = [r.mirrors && `${r.mirrors} mirror link${r.mirrors === 1 ? "" : "s"}`, r.duplicates && `${r.duplicates} already in the list`, r.unsupported && `${r.unsupported} unsupported`].filter(Boolean).join(", ");
   const what = r.groups.length === 1 ? r.groups[0] + ": " : "";
+  if (r.groups.length) {
+    state.reveal = r.groups[0];
+    // Re-adding to a release that was folded away opens it again.
+    for (const g of groupsOf(state.jobs)) if (g.name === r.groups[0]) { collapsed.delete(g.key); opened.add(g.key); }
+  }
   toast(`Added ${what}${r.added} file${r.added === 1 ? "" : "s"}` + (extra ? ` · ${extra}` : ""));
   poll();
 });
@@ -980,18 +1055,24 @@ async function copy(text, msg) {
 // the desktop shell. Every value here is synthetic. ─────────────────────────
 function mockInvoke(cmd, args = {}) {
   const m = (mockInvoke.s ||= (() => {
+    // A long FitGirl release mid-way (parts + selective files), an older one
+    // that's finished, and a single file.
+    const langs = ["english", "french", "german", "japanese"];
     const names = [
-      ...Array.from({ length: 8 }, (_, i) => [`ExampleGame_--_fitgirl-repacks.site_--_.part${i + 1}.rar`, "ExampleGame"]),
-      ...Array.from({ length: 5 }, (_, i) => [`Starfield.Odyssey.Repack.part${String(i + 1).padStart(2, "0")}.rar`, "Starfield Odyssey Repack"]),
-      ["Some.Tool.v2.1.zip", "Some Tool v2.1"],
+      ...Array.from({ length: 24 }, (_, i) => [`ExampleGame_--_fitgirl-repacks.site_--_.part${String(i + 1).padStart(2, "0")}.rar`, "ExampleGame", 2]),
+      ...langs.map((l) => [`fg-selective-${l}.bin`, "ExampleGame", 2]),
+      ...Array.from({ length: 5 }, (_, i) => [`Starfield.Odyssey.Repack.part${String(i + 1).padStart(2, "0")}.rar`, "Starfield Odyssey Repack", 1]),
+      ["Some.Tool.v2.1.zip", "Some Tool v2.1", 3],
     ];
     const t0 = Date.now();
-    const jobs = names.map(([name, group], i) => ({
-      group, folder: "C:\\Users\\you\\Downloads\\BetterMoon\\" + group, mirrors: i < 8 ? 1 : 0,
+    const stateOf = (i) => i < 14 || (i >= 28 && i < 33) ? "done" : i < 18 ? "downloading" : i === 18 ? "resolving" : i === 33 ? "failed" : i === 19 ? "paused" : "queued";
+    const jobs = names.map(([name, group, batch], i) => ({
+      group, folder: "C:\\Users\\you\\Downloads\\BetterMoon\\" + group, mirrors: 0,
       id: i + 1, name, url: `https://fuckingfast.co/demo${i}#${name}`, host: i % 4 === 3 ? "datanodes" : "fuckingfast",
-      state: i < 4 ? "done" : i < 8 ? "downloading" : i === 8 ? "resolving" : i === 13 ? "failed" : i === 12 ? "paused" : "queued",
-      total: i < 9 || i === 12 ? 1_048_576_000 * (1 + (i % 3) * 0.4) : 0, done: 0, speed: 0, eta: null, conns: 4,
-      error: i === 13 ? "File not found on datanodes" : null, note: null, hasDirect: i < 8, addedAt: t0, finishedAt: i < 4 ? t0 - (4 - i) * 400000 : null,
+      state: stateOf(i),
+      total: stateOf(i) === "queued" || i === 33 ? 0 : 1_048_576_000 * (1 + (i % 3) * 0.4), done: 0, speed: 0, eta: null, conns: 4,
+      error: i === 33 ? "File not found on datanodes" : null, note: null, hasDirect: stateOf(i) === "done", addedAt: t0 - (3 - batch) * 3600000,
+      finishedAt: stateOf(i) === "done" ? t0 - (34 - i) * 120000 : null,
     }));
     jobs.forEach((j) => { j.done = j.state === "done" ? j.total : j.state === "paused" ? j.total * 0.37 : j.state === "downloading" ? j.total * (0.15 + 0.17 * (j.id % 4)) : 0; });
     return { jobs, history: [], settings: { outDir: "C:\\Users\\you\\Downloads\\BetterMoon", maxActive: 4, connections: 4, maxResolving: 3, retries: 3, browserPages: 3, captchaWait: 240, browserPath: "", dnApiKey: "", proxies: "", mode: "download", stallKiller: true, speedLimitMbs: 0, theme: "system", autoStart: true, releaseFolders: true, builtinBrowser: true } };
