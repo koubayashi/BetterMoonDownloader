@@ -242,9 +242,18 @@ pub struct Stats {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Disk {
+    dir: String,
+    free: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     jobs: Vec<JobView>,
     stats: Stats,
+    /// Free space where unfinished files are headed, and in the default folder.
+    disks: Vec<Disk>,
     history: Vec<f64>,
     attention: Vec<String>,
     disk_full: Option<String>,
@@ -865,9 +874,23 @@ impl Engine {
             st.eta = Some(remaining as f64 / st.speed);
             st.eta_estimated = unknown_left > 0;
         }
+        // A folder not made yet counts as its nearest existing parent.
+        let mut dirs: Vec<String> =
+            g.jobs.iter().filter(|j| j.rec.state != State::Done).map(|j| j.rec.out_dir.clone()).collect();
+        dirs.push(self.settings().out_dir);
+        dirs.sort();
+        dirs.dedup();
+        let disks = dirs
+            .into_iter()
+            .filter_map(|dir| {
+                let free = PathBuf::from(&dir).ancestors().find(|a| a.is_dir()).and_then(download::free_space)?;
+                Some(Disk { dir, free })
+            })
+            .collect();
         Snapshot {
             jobs,
             stats: st,
+            disks,
             history: g.history.iter().copied().collect(),
             attention: self.attention.list(),
             disk_full: g.disk_full.clone(),

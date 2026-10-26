@@ -253,6 +253,63 @@ fn platform_info(eng: Eng, platform: State<'_, Platform>) -> PlatformInfo {
     }
 }
 
+/// The first volume of a finished release's archive: `.part1.rar` /
+/// `.part01.rar`, `.7z.001`, or a single `.rar` / `.zip` / `.7z`. The archive
+/// program follows the other volumes from there.
+fn first_volume(paths: &[PathBuf]) -> Option<&PathBuf> {
+    let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let first = regex::Regex::new(r"(\.part0*1\.rar|\.(7z|zip|rar)\.0*1)$").unwrap();
+    let multi = regex::Regex::new(r"(\.part\d+\.rar|\.\d{3})$").unwrap();
+    let single = regex::Regex::new(r"\.(rar|zip|7z)$").unwrap();
+    paths
+        .iter()
+        .find(|p| first.is_match(&name(p)))
+        .or_else(|| paths.iter().find(|p| single.is_match(&name(p)) && !multi.is_match(&name(p))))
+}
+
+/// Open the release's first archive volume in the user's archive program.
+/// Only archives, never a program, and only files this app finished.
+#[tauri::command]
+fn open_archive(app: tauri::AppHandle, eng: Eng, ids: Vec<u64>) -> Result<(), String> {
+    let done: Vec<PathBuf> = ids
+        .iter()
+        .filter_map(|&id| eng.job_paths(id))
+        .filter(|(p, done)| *done && p.is_file())
+        .map(|(p, _)| p)
+        .collect();
+    let first = first_volume(&done).ok_or("No archive to open in this release")?;
+    app.opener().open_path(first.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
+/// Window title and taskbar progress, so a run can be followed with the window
+/// in the background. `progress` is 0–100; `status` is normal, paused, error or none.
+#[tauri::command]
+fn win_status(app: tauri::AppHandle, title: String, progress: Option<u64>, status: String) -> Result<(), String> {
+    use tauri::window::{ProgressBarState, ProgressBarStatus};
+    let w = main_window(&app)?;
+    let _ = w.set_title(&title);
+    let status = match status.as_str() {
+        "normal" => ProgressBarStatus::Normal,
+        "paused" => ProgressBarStatus::Paused,
+        "error" => ProgressBarStatus::Error,
+        _ => ProgressBarStatus::None,
+    };
+    w.set_progress_bar(ProgressBarState { status: Some(status), progress }).map_err(|e| e.to_string())
+}
+
+/// A release finished. A system notification (shown only where the OS allows
+/// it for this app), and the taskbar button flashes if the window is in the back.
+#[tauri::command]
+fn notify(app: tauri::AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+    if let Ok(w) = main_window(&app) {
+        if !w.is_focused().unwrap_or(true) {
+            let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
+        }
+    }
+}
+
 // ── window controls (the window is undecorated) ─────────────────────────────
 
 fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
@@ -310,6 +367,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(engine.clone())
         .setup(move |app| {
             // Built here rather than in tauri.conf.json so it can carry the
@@ -360,6 +418,9 @@ pub fn run() {
             retry_failed,
             remove,
             delete_files,
+            open_archive,
+            win_status,
+            notify,
             clear_finished,
             dismiss_notice,
             get_settings,
@@ -395,6 +456,21 @@ mod nav_tests {
         assert!(!ok("https://datanodes.to/abc"));
         assert!(!ok("https://tauri.localhost.evil.com/"));
         assert!(!ok("file:///C:/Windows/win.ini"));
+    }
+
+    #[test]
+    fn archive_opens_at_its_first_volume() {
+        use std::path::PathBuf;
+        let v = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let pick = |names: &[&str]| super::first_volume(&v(names)).map(|p| p.to_string_lossy().into_owned());
+        let rel = ["ExampleGame_--_fitgirl-repacks.site_--_.part02.rar", "ExampleGame_--_fitgirl-repacks.site_--_.part01.rar", "fg-selective-english.bin"];
+        assert_eq!(pick(&rel).as_deref(), Some("ExampleGame_--_fitgirl-repacks.site_--_.part01.rar"));
+        assert_eq!(pick(&["Game.part2.rar", "Game.part1.rar"]).as_deref(), Some("Game.part1.rar"));
+        assert_eq!(pick(&["Game.7z.002", "Game.7z.001"]).as_deref(), Some("Game.7z.001"));
+        assert_eq!(pick(&["Some.Tool.zip"]).as_deref(), Some("Some.Tool.zip"));
+        // A later volume alone is not a start, and a program is never opened.
+        assert_eq!(pick(&["Game.part2.rar"]), None);
+        assert_eq!(pick(&["setup.exe", "fg-01.bin"]), None);
     }
 }
 

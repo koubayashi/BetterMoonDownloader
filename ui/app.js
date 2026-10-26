@@ -213,6 +213,8 @@ function patchRow(el, j) {
 const collapsed = new Set(JSON.parse(safeGet("bmd.collapsed") || "[]"));
 const opened = new Set(JSON.parse(safeGet("bmd.opened") || "[]"));
 const doneOpen = new Set();
+const waitOpen = new Set();
+const WAIT_SHOWN = 3;
 function toggleGroup(g) {
   const k = g.key;
   if (isCollapsed(g)) { collapsed.delete(k); opened.add(k); } else { collapsed.add(k); opened.delete(k); }
@@ -235,26 +237,54 @@ function makeSection(kind) {
 function finishedIds() {
   return groupsOf(state.jobs).filter(isFinished).flatMap((g) => g.jobs.map((j) => j.id));
 }
+// Clearing only touches the list, so it's undoable instead of confirmed: the
+// entries hide at once and are removed a few seconds later unless undone.
+let pendingClear = null;
+async function commitClear() {
+  if (!pendingClear) return;
+  const { ids, timer } = pendingClear;
+  clearTimeout(timer);
+  pendingClear = null;
+  await invoke("remove", { ids: [...ids], deletePartial: false }).catch(toastErr);
+}
 async function clearFinished() {
+  await commitClear();
   const ids = finishedIds();
   if (!ids.length) return toast("Nothing finished to clear");
-  await invoke("remove", { ids, deletePartial: false });
-  toast(`Cleared ${ids.length} finished file${ids.length === 1 ? "" : "s"} from the list. Files on disk are kept.`);
+  pendingClear = { ids: new Set(ids), timer: setTimeout(() => commitClear().then(poll), UNDO_MS) };
+  state.jobs = state.jobs.filter((j) => !pendingClear.ids.has(j.id));
+  renderList(); renderSummary();
+  toast(`Cleared ${ids.length} finished file${ids.length === 1 ? "" : "s"} from the list`, {
+    label: "Undo",
+    ms: UNDO_MS,
+    run: () => { clearTimeout(pendingClear.timer); pendingClear = null; toast("Restored"); poll(); },
+  });
 }
+const UNDO_MS = 6000;
 
-function makeFold() {
+// A folded run of rows: the finished parts ("14 finished · 18.75 GB") or the
+// tail of the queue ("70 more waiting · next: part24.rar").
+function makeFold(kind) {
   const el = document.createElement("div");
   el.className = "fold";
-  el.innerHTML = `<svg class="chev" viewBox="0 0 20 20"><path d="M7.5 5l5 5-5 5"/></svg><svg class="ok-ic"><use href="#i-check"/></svg><span class="fold-text"></span><span class="fold-hint"></span>`;
+  el.dataset.kind = kind;
+  const icon = kind === "done" ? "check" : "queue";
+  el.innerHTML = `<svg class="chev" viewBox="0 0 20 20"><path d="M7.5 5l5 5-5 5"/></svg><svg class="ok-ic"><use href="#i-${icon}"/></svg><span class="fold-text"></span><span class="fold-hint"></span>`;
   el._ = { text: $(".fold-text", el), hint: $(".fold-hint", el), last: {} };
   return el;
 }
-function patchFold(el, g, done) {
-  const open = doneOpen.has(g.key);
+function patchFold(el, g, kind, jobs) {
+  const open = (kind === "done" ? doneOpen : waitOpen).has(g.key);
   el.dataset.key = g.key;
   el.classList.toggle("is-open", open);
-  const size = done.reduce((a, j) => a + (j.total || 0), 0);
-  set(el._.text, "text", el._.last, `${done.length} finished${size ? " · " + bytes(size) : ""}`);
+  let text;
+  if (kind === "done") {
+    const size = jobs.reduce((a, j) => a + (j.total || 0), 0);
+    text = `${jobs.length} finished${size ? " · " + bytes(size) : ""}`;
+  } else {
+    text = open ? `${jobs.length} more waiting` : `${jobs.length} more waiting · next: ${jobs[0].name}`;
+  }
+  set(el._.text, "text", el._.last, text);
   set(el._.hint, "hint", el._.last, open ? "Hide" : "Show");
 }
 function safeGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
@@ -273,6 +303,14 @@ function makeGroup() {
   el._ = { moon: $(".moon", el), name: $(".name", el), sub: $(".sub", el), bar: $(".bar i", el), pct: $(".pct", el),
     size: $(".c-size", el), speed: $(".c-speed", el), eta: $(".c-eta", el), act: $(".c-act", el), last: {} };
   return el;
+}
+
+// Same test as the Rust side picks the first volume with; the button only
+// shows when there's something it can open.
+const hasArchive = (jobs) => jobs.some((j) => /(\.part0*1\.rar|\.(7z|zip|rar)\.0*1)$/i.test(j.name) || (/\.(rar|zip|7z)$/i.test(j.name) && !/\.part\d+\.rar$/i.test(j.name)));
+async function openArchive(ids) {
+  await invoke("open_archive", { ids });
+  toast("Opened in your archive program. It reads the other parts on its own.");
 }
 
 function groupMode(s) {
@@ -322,6 +360,7 @@ function patchGroup(el, g) {
   const b = (act, icon, title) => `<button class="icon-btn" data-gact="${act}" title="${title}"><svg><use href="#i-${icon}"/></svg></button>`;
   set(p.act, "act", c,
     (mode === "pause" ? b("pause", "pause", "Pause this release") : mode === "resume" ? b("resume", s.failed && !s.paused ? "retry" : "play", "Resume this release") : "")
+    + (s.done === s.count && hasArchive(g.jobs) ? b("archive", "archive", "Open part 1 in your archive program to extract it") : "")
     + b("folder", "folder", "Open folder"), true);
 }
 
@@ -367,9 +406,18 @@ function displayItems() {
     const sorted = vis.slice().sort((a, b) => ROW_RANK[a.state] - ROW_RANK[b.state]);
     const rest = sorted.filter((j) => j.state !== "done");
     const done = foldable && rest.length ? sorted.filter((j) => j.state === "done") : [];
-    for (const j of done.length ? rest : sorted) items.push({ j, inGroup: true });
+    // The next few in line show; a long tail of identical "Queued" rows folds.
+    const waiting = rest.filter((j) => ROW_RANK[j.state] === 2);
+    const foldWait = foldable && waiting.length > WAIT_SHOWN + 1;
+    for (const j of done.length ? rest : sorted) {
+      const w = ROW_RANK[j.state] === 2 ? waiting.indexOf(j) : -1;
+      if (foldWait && w >= WAIT_SHOWN && !waitOpen.has(g.key)) continue;
+      items.push({ j, inGroup: true });
+      if (foldWait && w === waiting.length - 1 && waitOpen.has(g.key)) items.push({ fold: g, kind: "wait", jobs: waiting.slice(WAIT_SHOWN) });
+      if (foldWait && w === WAIT_SHOWN - 1 && !waitOpen.has(g.key)) items.push({ fold: g, kind: "wait", jobs: waiting.slice(WAIT_SHOWN) });
+    }
     if (done.length) {
-      items.push({ fold: g, done });
+      items.push({ fold: g, kind: "done", jobs: done });
       if (doneOpen.has(g.key)) done.forEach((j) => items.push({ j, inGroup: true }));
     }
   }
@@ -387,12 +435,12 @@ function renderList() {
   let prev = null;
   let reveal = null;
   for (const it of items) {
-    const key = it.section ? "s" + it.section : it.g ? "g" + it.g.key : it.fold ? "f" + it.fold.key : it.j.id;
+    const key = it.section ? "s" + it.section : it.g ? "g" + it.g.key : it.fold ? (it.kind === "done" ? "f" : "w") + it.fold.key : it.j.id;
     let el = state.rows.get(key);
-    if (!el) { el = it.section ? makeSection(it.section) : it.g ? makeGroup() : it.fold ? makeFold() : makeRow(it.j); state.rows.set(key, el); }
+    if (!el) { el = it.section ? makeSection(it.section) : it.g ? makeGroup() : it.fold ? makeFold(it.kind) : makeRow(it.j); state.rows.set(key, el); }
     if (it.section) { /* static */ }
     else if (it.g) patchGroup(el, it.g);
-    else if (it.fold) patchFold(el, it.fold, it.done);
+    else if (it.fold) patchFold(el, it.fold, it.kind, it.jobs);
     else { patchRow(el, it.j); el.classList.toggle("in-group", !!it.inGroup); }
     if (!reveal && state.reveal && !it.fold && !it.section && (it.g ? it.g.name : it.j.group) === state.reveal) reveal = el;
     seen.add(key);
@@ -575,6 +623,80 @@ function renderBanners(snap) {
   if (snap.notice) $("#noticeText").textContent = snap.notice;
   $("#diskFull").hidden = !snap.diskFull;
   if (snap.diskFull) $("#diskText").innerHTML = `<b>The disk is full.</b> ${esc(snap.diskFull)}. Everything is paused and partial files are kept. Free some space, then resume.`;
+
+  // Before it happens: what's left to download against what's free there.
+  const short = snap.diskFull ? null : spaceShortfall();
+  $("#spaceWarn").hidden = !short;
+  if (short) {
+    const when = short.runsOutIn ? ` At this speed it runs out in ${humanLeft(short.runsOutIn).replace(/ left$/, "")}.` : "";
+    $("#spaceText").innerHTML = `<b>Not enough space on ${esc(short.drive)}.</b> About ${bytes(short.need)} still to download, ${bytes(short.free)} free.${when} Downloads pause when it fills up.`;
+    state.spaceDir = short.dir;
+  }
+}
+
+// ── disk space ─────────────────────────────────────────────────────────────
+const driveOf = (dir) => (/^[A-Za-z]:/.test(dir) ? dir.slice(0, 2).toUpperCase() : "this drive");
+function diskFor(dir) {
+  // The longest matching folder: a job in D:\Games\X is on the disk listed for D:\Games.
+  return (state.disks || []).filter((d) => dir.toLowerCase().startsWith(d.dir.toLowerCase())).sort((a, b) => b.dir.length - a.dir.length)[0];
+}
+// Sparse files reserve nothing, so what's free has to hold everything not yet written.
+function spaceShortfall() {
+  const live = state.jobs.filter((j) => j.state !== "done" && j.state !== "failed");
+  const byDisk = new Map();
+  for (const j of live) {
+    const d = diskFor(j.folder);
+    if (!d) continue;
+    if (!byDisk.has(d)) byDisk.set(d, []);
+    byDisk.get(d).push(j);
+  }
+  for (const [d, jobs] of byDisk) {
+    const s = statsOf(jobs);
+    // With no size known yet there's nothing honest to compare.
+    if (!s.bytesTotal) continue;
+    const need = expectedBytes(s) - s.bytesDone;
+    if (need > d.free) return { dir: d.dir, drive: driveOf(d.dir), need, free: d.free, runsOutIn: s.speed > 1 ? d.free / s.speed : null };
+  }
+  return null;
+}
+
+// ── taskbar & window title ─────────────────────────────────────────────────
+// So a long run can be followed with the window in the background.
+let lastStatus = "";
+function reportStatus(snap) {
+  if (!inApp) return;
+  const groups = liveGroups();
+  let title = "BetterMoonDownloader", progress = null, status = "none";
+  if (groups.length) {
+    const s = statsOf(groups.flatMap((g) => g.jobs));
+    const pct = Math.floor(groupFrac(s) * 100);
+    const lead = groups[0].jobs.length === 1 ? groups[0].jobs[0].name : groups[0].name;
+    title = `${pct}% · ${lead} · BetterMoonDownloader`;
+    progress = Math.max(1, pct);
+    status = snap.diskFull || (s.failed && !s.active && !s.queued) ? "error" : s.active || s.queued ? "normal" : "paused";
+  }
+  const key = title + progress + status;
+  if (key === lastStatus) return;
+  lastStatus = key;
+  invoke("win_status", { title, progress, status }).catch(() => {});
+}
+
+// ── finished releases ──────────────────────────────────────────────────────
+// One notification per release, when it finishes while the app is open.
+let seenFinished = null;
+function announceFinished() {
+  const now = new Set(groupsOf(state.jobs).filter(isFinished).map((g) => g.key));
+  if (seenFinished) {
+    for (const g of groupsOf(state.jobs)) {
+      if (!now.has(g.key) || seenFinished.has(g.key)) continue;
+      const size = g.jobs.reduce((a, j) => a + (j.total || 0), 0);
+      const name = g.jobs.length === 1 ? g.jobs[0].name : g.name;
+      const body = `${g.jobs.length} file${g.jobs.length === 1 ? "" : "s"}${size ? " · " + bytes(size) : ""} downloaded.`;
+      if (inApp) invoke("notify", { title: `${name} is ready`, body }).catch(() => {});
+      toast(`${name} is ready`);
+    }
+  }
+  seenFinished = now;
 }
 
 function renderLog(newLines) {
@@ -602,15 +724,19 @@ async function poll() {
   polling = true;
   try {
     const snap = await invoke("snapshot", { logAfter: state.logSeq });
-    state.jobs = snap.jobs;
+    // Cleared but still undoable: out of sight until the removal goes through.
+    state.jobs = pendingClear ? snap.jobs.filter((j) => !pendingClear.ids.has(j.id)) : snap.jobs;
     state.stats = snap.stats;
     state.history = snap.history;
     state.logSeq = snap.logSeq;
+    state.disks = snap.disks || [];
     renderCounts();
     renderList();
     renderSummary();
     renderBanners(snap);
     renderLog(snap.log);
+    reportStatus(snap);
+    announceFinished();
   } catch (e) {
     console.error(e);
   } finally {
@@ -637,6 +763,7 @@ async function groupAction(act, key) {
     if (act === "pause") await invoke("pause", { ids });
     else if (act === "resume") await invoke("resume", { ids: g.jobs.filter((j) => j.state === "paused" || j.state === "failed").map((j) => j.id) });
     else if (act === "folder") await invoke("open_folder", { path: g.folder });
+    else if (act === "archive") await openArchive(ids);
     else if (act === "copy-src") copy((await invoke("source_links", { ids })).join("\n"), "Links copied");
     else if (act === "copy-direct") {
       const l = await invoke("direct_links", { ids });
@@ -664,6 +791,7 @@ function groupMenu(x, y, key) {
     (s.active || s.queued) && ["pause", "pause", "Pause release"],
     (s.paused || s.failed) && ["resume", "play", "Resume release"],
     multi && s.done < s.count && ["only", "down", "Download only this release"],
+    s.done === s.count && hasArchive(g.jobs) && ["archive", "archive", "Open archive to extract"],
     ["folder", "folder", "Open folder"],
     "-",
     ["copy-src", "copy", "Copy links"],
@@ -722,7 +850,8 @@ $("#list").addEventListener("pointerdown", (e) => {
   if (fold) {
     if (e.button !== 0) return;
     const k = fold.dataset.key;
-    doneOpen.has(k) ? doneOpen.delete(k) : doneOpen.add(k);
+    const open = fold.dataset.kind === "done" ? doneOpen : waitOpen;
+    open.has(k) ? open.delete(k) : open.add(k);
     renderList();
     return;
   }
@@ -740,6 +869,7 @@ $("#list").addEventListener("pointerdown", (e) => {
   } else if (e.button === 0 || !state.selected.has(id)) {
     state.selected.clear(); state.selected.add(id); state.anchor = id;
   }
+  state.cursor = id;
   renderList();
 });
 
@@ -764,6 +894,7 @@ async function rowAction(act, ids) {
     if (act === "pause") await invoke("pause", { ids });
     else if (act === "resume") await invoke("resume", { ids });
     else if (act === "reveal") await invoke("reveal", { id: ids[0] });
+    else if (act === "archive") await openArchive(ids);
     else if (act === "remove") await removeJobs(ids, false);
     else if (act === "remove-delete") await removeJobs(ids, true);
     else if (act === "remove-partial") await deletePartials(ids);
@@ -839,6 +970,7 @@ $("#list").addEventListener("contextmenu", (e) => {
     canPause && ["pause", "pause", "Pause" + many],
     canResume && ["resume", jobs.some((j) => j.state === "failed") ? "retry" : "play", (jobs.some((j) => j.state === "failed") ? "Retry" : "Resume") + many],
     ids.length === 1 && ["reveal", "folder", "Show in folder"],
+    ids.length === 1 && jobs[0].state === "done" && hasArchive(jobs) && ["archive", "archive", "Open archive to extract"],
     "-",
     ["copy-src", "copy", "Copy link" + (ids.length > 1 ? "s" : "")],
     ["copy-direct", "copy", "Copy direct link" + (ids.length > 1 ? "s" : "")],
@@ -919,6 +1051,7 @@ $("#runBtn").addEventListener("click", async () => {
 });
 $("#noticeDismiss").addEventListener("click", () => invoke("dismiss_notice").then(poll));
 $("#showBrowser").addEventListener("click", () => invoke("show_browser").catch(toastErr));
+$("#spaceOpen").addEventListener("click", () => invoke("open_folder", { path: state.spaceDir || state.settings.outDir }).catch(toastErr));
 $("#diskOpen").addEventListener("click", () => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
 $("#diskResume").addEventListener("click", () => invoke("resume_all").then(poll).catch(toastErr));
 $("#sumOpen").addEventListener("click", () => invoke("open_folder", { path: state.lastFolder || state.settings.outDir }).catch(toastErr));
@@ -988,6 +1121,14 @@ function openAdd(prefill = "") {
   updatePreview();
   setTimeout(() => $("#addText").focus(), 30);
 }
+// "412 GB free on D:", next to where the files will go. Sizes aren't known
+// until links are resolved, so this informs rather than blocks.
+function showFree() {
+  const d = addDir && diskFor(addDir);
+  const low = d && d.free < 10 * GB;
+  $("#addFree").textContent = d ? `${bytes(d.free)} free on ${driveOf(d.dir)}` : "";
+  $("#addFree").classList.toggle("low", !!low);
+}
 let previewTimer = 0;
 async function updatePreview() {
   clearTimeout(previewTimer);
@@ -998,6 +1139,7 @@ async function updatePreview() {
     $("#addSubmit").textContent = files ? `Add ${files} file${files === 1 ? "" : "s"}` : "Add links";
     const sub = state.settings.releaseFolders;
     $("#addDir").textContent = addDir + (sub && p.groups.length === 1 ? "\\" + p.groups[0].name : "");
+    showFree();
     if (!p.total) { $("#addPreview").textContent = "Paste links, one per line. Anything else in the text is ignored."; return; }
     const rows = p.groups.map((g) => {
       const hosts = [g.fuckingfast && "fuckingfast", g.datanodes && "datanodes"].filter(Boolean).join(" + ");
@@ -1023,7 +1165,7 @@ $("#openTxt").addEventListener("click", async () => {
 $("#addDirBtn").addEventListener("click", async () => {
   if (!inApp) return;
   const dir = await invoke("pick_folder", { current: addDir });
-  if (dir) { addDir = dir; $("#addDir").textContent = dir; $("#addDir").title = dir; }
+  if (dir) { addDir = dir; $("#addDir").textContent = dir; $("#addDir").title = dir; showFree(); }
 });
 $("#addSheet").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1109,7 +1251,34 @@ addEventListener("keydown", (e) => {
     const anyRunning = state.jobs.some((j) => ids.includes(j.id) && ["downloading", "resolving", "queued", "ready"].includes(j.state));
     rowAction(anyRunning ? "pause" : "resume", ids);
   }
+  // Arrows walk the visible files, Shift extends, Home/End jump; Enter shows the file.
+  if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key) && state.filter !== "log") {
+    e.preventDefault();
+    moveSelection(e.key, e.shiftKey);
+  }
+  if (e.key === "Enter" && state.selected.size === 1) rowAction("reveal", [...state.selected]);
 });
+
+function moveSelection(key, extend) {
+  const vis = visibleJobs().map((j) => j.id);
+  if (!vis.length) return;
+  const cur = state.cursor != null && vis.includes(state.cursor) ? vis.indexOf(state.cursor) : -1;
+  let i = key === "Home" ? 0 : key === "End" ? vis.length - 1 : cur + (key === "ArrowDown" ? 1 : -1);
+  if (cur === -1 && key === "ArrowUp") i = vis.length - 1;
+  i = Math.max(0, Math.min(vis.length - 1, i));
+  const id = vis[i];
+  if (extend && state.anchor != null && vis.includes(state.anchor)) {
+    const a = vis.indexOf(state.anchor);
+    state.selected.clear();
+    for (let k = Math.min(a, i); k <= Math.max(a, i); k++) state.selected.add(vis[k]);
+  } else {
+    state.selected.clear(); state.selected.add(id); state.anchor = id;
+  }
+  state.cursor = id;
+  renderList();
+  const el = state.rows.get(id);
+  if (el) el.scrollIntoView({ block: "nearest" });
+}
 
 // Pasting links anywhere opens the add sheet with them.
 addEventListener("paste", (e) => {
@@ -1136,13 +1305,21 @@ if (inApp) {
 
 // ── toast & clipboard ──────────────────────────────────────────────────────
 let toastTimer = 0;
-function toast(msg) {
+// `action`: an optional { label, run, ms } button, e.g. Undo.
+function toast(msg, action) {
   const t = $("#toast");
   t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.className = "toast-act";
+    b.textContent = action.label;
+    b.onclick = () => { t.hidden = true; action.run(); };
+    t.append(b);
+  }
   t.hidden = false;
   t.style.animation = "none"; void t.offsetWidth; t.style.animation = "";
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 2600);
+  toastTimer = setTimeout(() => (t.hidden = true), action ? action.ms || 6000 : 2600);
 }
 const toastErr = (e) => toast(String(e && e.message ? e.message : e));
 async function copy(text, msg) {
@@ -1217,7 +1394,7 @@ function mockInvoke(cmd, args = {}) {
       const unknown = c((j) => !j.total && j.state !== "failed");
       const avg = bytesTotal / known.length;
       return Promise.resolve({
-        jobs: m.jobs.map((j) => ({ ...j })), history: [...m.history], attention: [], diskFull: null, browserOpen: false, log: [], logSeq: 0,
+        jobs: m.jobs.map((j) => ({ ...j })), history: [...m.history], disks: [{ dir: m.settings.outDir, free: 9.4e9 }], attention: [], diskFull: null, browserOpen: false, log: [], logSeq: 0,
         stats: { count: m.jobs.length, done: c((j) => j.state === "done"), failed: c((j) => j.state === "failed"), active: c((j) => ["downloading", "resolving"].includes(j.state)),
           queued: c((j) => ["queued", "ready"].includes(j.state)), paused: c((j) => j.state === "paused"), bytesDone, bytesTotal, unknownSizes: unknown, speed,
           eta: speed ? (bytesTotal - bytesDone + unknown * avg) / speed : null, etaEstimated: unknown > 0 },
