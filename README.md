@@ -95,16 +95,17 @@ To remove it later: `sudo apt remove better-moon-downloader` or `sudo dnf remove
 - **Built-in browser.** Cloudflare-protected pages are resolved in a hidden browser window inside the app, so there's nothing else to install.
 - **Clear progress.** Files done, GB done, total speed, time left and the clock time the batch should finish. Progress also shows on the taskbar button and in the window title, and a notification arrives when a release finishes.
 - **Warns before the disk fills.** A banner appears when what's left to download won't fit in the free space, and the Add links sheet shows how much room the target drive has.
-- **Open the archive when it's done.** A finished release's archive button opens part 1 in your archive program (WinRAR, 7-Zip…).
-- **Two ways to delete.** *Delete partial files* removes unfinished downloads and keeps finished files. *Delete all files* also moves finished files to the Recycle Bin (Trash on Linux), so you can still get them back. *Clear all* only removes finished entries from the list, with Undo.
-- **Light and dark mode**, following Windows or set by hand.
+- **Extract when it's done.** A finished release's **Extract…** button opens part 1 in your archive program (WinRAR, 7-Zip…), which picks up the other parts itself.
+- **Two ways to delete.** *Delete partial files* removes unfinished downloads and keeps finished files. *Delete all files* also moves finished files to the Recycle Bin (Trash on Linux), so you can still get them back. *Clear finished* only removes finished releases from the list (the files stay), with Undo.
+- **Light and dark mode**, following the system or set in Settings.
 
 ## Using it
 
 1. **Add links**: `Ctrl+N`, paste anywhere (`Ctrl+V`), drop one or more `.txt` files on the window, or use *Add links → Open .txt…*
-2. Each release header has a moon that fills as it downloads. Each row shows the file, a progress bar, %, size done, speed and time left.
+2. Each release header has a moon that fills as it downloads. Click the header to select the whole release; click the arrow on its left (or double-click the header) to fold it. Each row shows the file, a progress bar, %, size done, speed and time left.
 3. **Right-click** a row (or select several with Ctrl/Shift) to pause, resume, retry, show in folder, open the archive, copy links, remove, or delete files. Right-click a release header for **Download only this release**.
-   Keyboard: `↑`/`↓` move through the list (`Shift` extends the selection, `Home`/`End` jump), `Enter` shows the file in its folder, `Space` pauses or resumes, `Del` removes from the list, and `Shift+Del` deletes the files too (finished ones go to the Recycle Bin).
+   **Save new downloads to**, at the bottom of the sidebar, shows where new downloads go: click it to pick another folder (downloads already in the list stay where they are), or click the icon next to it to open the folder.
+   Keyboard: `↑`/`↓` move through the list (`Shift` extends the selection, `Home`/`End` jump), `Enter` or a double-click shows a finished file in its folder, `Space` pauses or resumes, `Del` removes from the list, and `Shift+Del` deletes the files too (finished ones go to the Recycle Bin).
 4. **Captchas.** If Cloudflare ever wants a click, a small "BetterMoonDownloader · verification" window appears with the checkbox, and the blue banner tells you so. Tick it and the download continues. You can switch to an external Chrome/Edge window in Settings.
 5. **Settings**: files at once, connections per file, speed limit, links-only mode (export direct links for another downloader), retries, browser tabs, captcha wait, browser path, datanodes premium API key (skips the browser), and proxies.
 

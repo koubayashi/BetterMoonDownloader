@@ -157,6 +157,15 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 }
 .side-btn span { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side-btn:hover, .icon-btn:hover { background: oklch(from var(--ink) l c h / 0.06); }
+/* Save to: the row is the setting (click to change), the icon opens the folder. */
+.save-to { align-items: center; }
+/* The hint only takes room on hover; the full path is in the tooltip. */
+.save-to .side-btn em { display: none; margin-left: auto; flex: none; font: 500 12px/1 var(--font); font-style: normal; color: var(--accent); }
+.save-to .side-btn:hover em, .save-to .side-btn:focus-visible em { display: inline; }
+.save-to .icon-btn svg { width: 16px; height: 16px; }
+.sidebar-foot .filters-sep { margin: 6px 10px; }
+.filter .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-right: 4px; flex: none; }
+.filter .dot[data-level="error"] { background: var(--danger); }
 
 /* ── Main ────────────────────────────────────────────────── */
 .main {
@@ -322,6 +331,20 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
   transform: rotate(90deg); transition: transform .2s var(--ease);
 }
 .group.is-collapsed .chev { transform: rotate(0deg); }
+/* Only this gutter (chevron and moon) folds; the rest of the header selects. */
+.group .fold-hit { position: absolute; left: 0; top: 0; bottom: 0; width: 42px; border-radius: var(--r) 0 0 var(--r); cursor: pointer; }
+.group .fold-hit:hover { background: oklch(from var(--ink) l c h / 0.05); }
+.group .fold-hit:hover ~ .chev { color: var(--ink); }
+.group .chev, .group .moon { pointer-events: none; }
+.group.is-sel, .group.is-sel:hover { background: var(--select); }
+/* A finished release has no speed or time left; Extract takes that room. */
+.group[data-state="done"] .c-speed, .group[data-state="done"] .c-eta { display: none; }
+.group[data-state="done"] .c-act { grid-column: 4 / -1; align-items: center; gap: 4px; }
+.group .extract { height: 26px; }
+.group .extract svg { width: 15px; height: 15px; }
+/* Double-click on a file that isn't on disk yet: the status says why nothing opened. */
+.sub.nudge { animation: nudge .9s var(--ease); }
+@keyframes nudge { 0%, 40% { color: var(--accent); } }
 .group .name { font: 600 13.5px/1.3 var(--font-display); letter-spacing: -0.005em; }
 .group .c-act { opacity: 1; }
 .group .c-act .icon-btn { color: var(--ink-2); }
@@ -368,12 +391,15 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 /* A finished release is a single quiet line: its bar is always full, so it goes. */
 .group[data-state="done"] { height: 46px; background: transparent; }
 .group[data-state="done"]:hover { background: var(--hover); }
+.group.is-sel[data-state="done"], .group.is-sel[data-state="done"]:hover { background: var(--select); }
 .group[data-state="done"] .bar, .group[data-state="done"] .pct { visibility: hidden; }
 .group[data-state="done"] .name { font-weight: 500; }
 .group[data-state="done"] + .group[data-state="done"] { margin-top: 2px; }
 
 .release.is-done { opacity: .7; }
 .release.is-done:hover, .release.is-done.is-active { opacity: 1; }
+.release b svg { width: 14px; height: 14px; color: var(--done); display: block; }
+.section h2 .sec-meta { font-weight: 400; color: var(--ink-3); }
 
 /* Just added: one soft wash so the eye lands on it. */
 .is-new { animation: arrived 1.8s var(--ease); }
@@ -447,6 +473,17 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 .sheet-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 4px; }
 .foot-note { margin-right: auto; color: var(--ink-3); font-size: 12px; }
+.dir-note { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; margin-top: -6px; padding-left: 66px; color: var(--ink-2); font-size: 12.5px; }
+
+/* Appearance: a segmented switch, applied on click. */
+.seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--r-sm); background: oklch(from var(--ink) l c h / 0.06); }
+.seg button {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: calc(var(--r-sm) - 2px);
+  background: transparent; color: var(--ink-2); font-size: 12.5px; font-weight: 500; transition: background-color .12s ease, color .12s ease;
+}
+.seg button svg { width: 14px; height: 14px; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--raised); color: var(--ink); box-shadow: 0 1px 2px oklch(from var(--ink) l c h / 0.12); }
 
 .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; overflow-y: auto; padding-right: 4px; }
 .settings section { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -517,7 +554,9 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 }
 @media (max-width: 860px) {
   .app { grid-template-columns: 64px 1fr; }
-  .brand-name, .filter span, .filter b, .side-btn span, #saveToLabel { display: none; }
+  .brand-name, .filter span, .filter b, .side-btn span, .save-to .side-btn:is(*, :hover, :focus-visible) em, #saveToLabel { display: none; }
+  .filter .dot { position: absolute; margin: -12px 0 0 14px; }
+  .filter { position: relative; }
   .filter, .side-btn { justify-content: center; padding: 0; }
   .side-row { flex-direction: column; }
   .side-row .icon-btn { width: 100%; }
