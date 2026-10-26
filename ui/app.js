@@ -226,10 +226,19 @@ function makeSection(kind) {
   const el = document.createElement("div");
   el.className = "section";
   el.dataset.kind = kind;
-  el.innerHTML = kind === "fin"
-    ? `<h2>Finished</h2><span class="section-acts"><button class="btn btn-sm" data-clear title="Remove from the list; the files stay on disk">Clear all</button><button class="btn btn-sm btn-danger" data-purge title="Remove from the list and move the files to the Recycle Bin"><svg><use href="#i-trash"/></svg><span>Delete files…</span></button></span>`
-    : `<h2>In progress</h2>`;
+  el.innerHTML = `<h2>${kind === "fin" ? "Finished" : "In progress"}<span class="sec-meta"></span></h2>` + (kind === "fin"
+    ? `<span class="section-acts"><button class="btn btn-sm" data-clear title="Remove finished releases from the list. The files stay on disk.">Clear finished</button><button class="btn btn-sm btn-danger" data-purge title="Move the finished files to the ${binName()} and remove them from the list"><svg><use href="#i-trash"/></svg><span>Delete finished files…</span></button></span>`
+    : "");
+  el._ = { meta: $(".sec-meta", el), last: {} };
   return el;
+}
+// "1 release · 5 files", so the heading says what the sidebar's file counts are made of.
+function patchSection(el, kind) {
+  const groups = groupsOf(state.jobs).filter((g) => isFinished(g) === (kind === "fin"));
+  const rel = groups.filter((g) => g.jobs.length > 1).length;
+  const files = groups.reduce((a, g) => a + g.jobs.length, 0);
+  const bits = [rel && `${rel} release${rel === 1 ? "" : "s"}`, `${files} file${files === 1 ? "" : "s"}`].filter(Boolean);
+  set(el._.meta, "meta", el._.last, " · " + bits.join(" · "));
 }
 
 // Finished releases only: parts already done in a release that's still
@@ -294,6 +303,7 @@ function makeGroup() {
   const el = document.createElement("div");
   el.className = "group";
   el.innerHTML = `
+    <span class="fold-hit" title="Show or hide the files"></span>
     <svg class="chev" viewBox="0 0 20 20"><path d="M7.5 5l5 5-5 5"/></svg>
     <svg class="moon" viewBox="0 0 20 20"></svg>
     <div class="c-name"><div class="name"></div><div class="sub"></div></div>
@@ -307,7 +317,10 @@ function makeGroup() {
 
 // Same test as the Rust side picks the first volume with; the button only
 // shows when there's something it can open.
-const hasArchive = (jobs) => jobs.some((j) => /(\.part0*1\.rar|\.(7z|zip|rar)\.0*1)$/i.test(j.name) || (/\.(rar|zip|7z)$/i.test(j.name) && !/\.part\d+\.rar$/i.test(j.name)));
+const firstArchive = (jobs) => jobs.find((j) => /(\.part0*1\.rar|\.(7z|zip|rar)\.0*1)$/i.test(j.name))
+  || jobs.find((j) => /\.(rar|zip|7z)$/i.test(j.name) && !/\.part\d+\.rar$/i.test(j.name));
+const hasArchive = (jobs) => !!firstArchive(jobs);
+const extractTip = (jobs) => `Opens ${firstArchive(jobs).name} in your archive program (WinRAR, 7-Zip…) so you can extract it`;
 async function openArchive(ids) {
   await invoke("open_archive", { ids });
   toast("Opened in your archive program. It reads the other parts on its own.");
@@ -331,6 +344,7 @@ function patchGroup(el, g) {
   const mode = groupMode(s);
   el.dataset.state = s.active ? "downloading" : mode === "done" ? (s.failed ? "failed" : "done") : s.paused && !s.queued ? "paused" : "queued";
   el.classList.toggle("is-collapsed", isCollapsed(g));
+  el.classList.toggle("is-sel", g.jobs.every((j) => state.selected.has(j.id)));
   const moonKey = Math.round(frac * 40);
   if (c.moon !== moonKey) { c.moon = moonKey; p.moon.innerHTML = moonSvg(s.done === s.count ? 1 : frac); }
   set(p.name, "name", c, g.name);
@@ -360,7 +374,7 @@ function patchGroup(el, g) {
   const b = (act, icon, title) => `<button class="icon-btn" data-gact="${act}" title="${title}"><svg><use href="#i-${icon}"/></svg></button>`;
   set(p.act, "act", c,
     (mode === "pause" ? b("pause", "pause", "Pause this release") : mode === "resume" ? b("resume", s.failed && !s.paused ? "retry" : "play", "Resume this release") : "")
-    + (s.done === s.count && hasArchive(g.jobs) ? b("archive", "archive", "Open part 1 in your archive program to extract it") : "")
+    + (s.done === s.count && hasArchive(g.jobs) ? `<button class="btn btn-sm extract" data-gact="archive" title="${esc(extractTip(g.jobs))}"><svg><use href="#i-zip"/></svg><span>Extract…</span></button>` : "")
     + b("folder", "folder", "Open folder"), true);
 }
 
@@ -438,7 +452,7 @@ function renderList() {
     const key = it.section ? "s" + it.section : it.g ? "g" + it.g.key : it.fold ? (it.kind === "done" ? "f" : "w") + it.fold.key : it.j.id;
     let el = state.rows.get(key);
     if (!el) { el = it.section ? makeSection(it.section) : it.g ? makeGroup() : it.fold ? makeFold(it.kind) : makeRow(it.j); state.rows.set(key, el); }
-    if (it.section) { /* static */ }
+    if (it.section) patchSection(el, it.section);
     else if (it.g) patchGroup(el, it.g);
     else if (it.fold) patchFold(el, it.fold, it.kind, it.jobs);
     else { patchRow(el, it.j); el.classList.toggle("in-group", !!it.inGroup); }
@@ -596,6 +610,13 @@ function renderCounts() {
   for (const [k, v] of Object.entries(counts)) {
     const el = $(`[data-count="${k}"]`);
     el.textContent = v || (k === "all" ? 0 : "");
+    const n = v || 0;
+    let tip = `${n} file${n === 1 ? "" : "s"}`;
+    if (k === "done" && n) {
+      const inLive = state.jobs.filter((j) => j.state === "done" && !isFinished(groupByKey(gkey(j)) || { jobs: [] })).length;
+      if (inLive) tip += `, ${inLive} of them in releases still downloading`;
+    }
+    el.parentElement.title = tip;
     if (k === "failed") el.classList.toggle("has", v > 0);
   }
   // One button that does the obvious thing.
@@ -704,8 +725,13 @@ function renderLog(newLines) {
     state.log.push(...newLines);
     if (state.log.length > 2000) state.log.splice(0, state.log.length - 2000);
   }
-  $('[data-count="log"]').textContent = "";
-  if (state.filter !== "log") return;
+  if (state.filter !== "log") {
+    const worst = newLines.some((l) => l.level === "error") ? "error" : newLines.some((l) => l.level === "warn") ? "warn" : null;
+    const dot = $("#logDot");
+    if (worst && (dot.hidden || dot.dataset.level !== "error")) { dot.dataset.level = worst; dot.hidden = false; }
+    $("#openLog").title = dot.hidden ? "" : "New warnings since you last looked";
+    return;
+  }
   const box = $("#log");
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   if (!state.log.length) { box.innerHTML = `<div class="log-empty">Nothing has happened yet.</div>`; return; }
@@ -791,7 +817,7 @@ function groupMenu(x, y, key) {
     (s.active || s.queued) && ["pause", "pause", "Pause release"],
     (s.paused || s.failed) && ["resume", "play", "Resume release"],
     multi && s.done < s.count && ["only", "down", "Download only this release"],
-    s.done === s.count && hasArchive(g.jobs) && ["archive", "archive", "Open archive to extract"],
+    s.done === s.count && hasArchive(g.jobs) && ["archive", "zip", "Extract…"],
     ["folder", "folder", "Open folder"],
     "-",
     ["copy-src", "copy", "Copy links"],
@@ -817,7 +843,7 @@ function renderReleases() {
     const sep = i === firstDone && i > 0 ? `<div class="filters-sep"></div>` : "";
     const s = statsOf(g.jobs);
     const frac = groupFrac(s);
-    const pct = s.done === s.count ? "done" : Math.floor(frac * 100) + "%";
+    const pct = s.done === s.count ? `<svg aria-label="Finished"><use href="#i-check"/></svg>` : Math.floor(frac * 100) + "%";
     const active = state.filter === "g:" + g.key ? " is-active" : "";
     const paused = groupMode(s) === "resume" ? " is-paused" : "";
     const fin = isFinished(g) ? " is-done" : "";
@@ -841,9 +867,19 @@ $("#releases").addEventListener("contextmenu", (e) => {
 $("#list").addEventListener("pointerdown", (e) => {
   const grp = e.target.closest(".group");
   if (grp) {
-    if (e.button !== 0 || e.target.closest(".c-act")) return;
+    if (e.target.closest(".c-act")) return;
     const g = groupByKey(grp.dataset.key);
-    if (g) { toggleGroup(g); renderList(); }
+    if (!g) return;
+    // The chevron gutter folds; the rest of the header selects the release,
+    // like any other row (Ctrl/Shift add to the selection).
+    if (e.target.closest(".fold-hit")) { if (e.button === 0) { toggleGroup(g); renderList(); } return; }
+    const ids = g.jobs.map((j) => j.id);
+    const all = ids.every((id) => state.selected.has(id));
+    if (e.ctrlKey && all) ids.forEach((id) => state.selected.delete(id));
+    else if (e.ctrlKey || e.shiftKey) ids.forEach((id) => state.selected.add(id));
+    else if (e.button === 0 || !all) { state.selected.clear(); ids.forEach((id) => state.selected.add(id)); }
+    state.anchor = state.cursor = ids[0];
+    renderList();
     return;
   }
   const fold = e.target.closest(".fold");
@@ -874,9 +910,27 @@ $("#list").addEventListener("pointerdown", (e) => {
 });
 
 $("#list").addEventListener("dblclick", (e) => {
+  if (e.target.closest(".c-act, .fold-hit")) return;
+  const grp = e.target.closest(".group");
+  if (grp) {
+    const g = groupByKey(grp.dataset.key);
+    if (g) { toggleGroup(g); renderList(); }
+    return;
+  }
   const row = e.target.closest(".row");
-  if (row) invoke("reveal", { id: +row.dataset.id }).catch(toastErr);
+  if (row) openRow(+row.dataset.id);
 });
+
+// Double-click and Enter show a finished file. A file that isn't on disk yet
+// has nothing to show, so its status line flashes instead of opening a folder.
+function openRow(id) {
+  const j = state.jobs.find((x) => x.id === id);
+  if (!j) return;
+  if (j.state === "done") return invoke("reveal", { id }).catch(toastErr);
+  const sub = state.rows.get(id) && state.rows.get(id)._.sub;
+  if (sub) { sub.classList.remove("nudge"); void sub.offsetWidth; sub.classList.add("nudge"); }
+  toast(`${j.name} isn't downloaded yet`);
+}
 
 $("#list").addEventListener("click", (e) => {
   if (e.target.closest("[data-clear]")) return clearFinished().catch(toastErr).then(poll);
@@ -931,13 +985,18 @@ async function deletePartials(ids) {
   toast(`Deleted partial files of ${n}`);
 }
 
+// Linux runs with the system title bar; that's the cheapest platform tell the page has.
+const onLinux = () => !!(state.platform && state.platform.nativeFrame);
+const binName = () => onLinux() ? "Trash" : "Recycle Bin";
+const fileManager = () => onLinux() ? "your file manager" : "File Explorer";
+
 // Finished files go to the Recycle Bin (recoverable); partial downloads are
 // deleted outright, since they're useless on their own.
 async function deleteFromDisk(ids) {
   if (!ids.length) return toast("Nothing to delete");
   const jobs = state.jobs.filter((j) => ids.includes(j.id));
   const fin = jobs.filter((j) => j.state === "done").length, part = jobs.length - fin;
-  const bin = state.platform && state.platform.nativeFrame ? "Trash" : "Recycle Bin";
+  const bin = binName();
   const n = (k, w) => `${k} ${w}${k === 1 ? "" : "s"}`;
   const what = [fin && `move ${n(fin, "finished file")} to the ${bin}`, part && `delete ${n(part, "partial download")}`].filter(Boolean).join(" and ");
   if (inApp) {
@@ -970,7 +1029,7 @@ $("#list").addEventListener("contextmenu", (e) => {
     canPause && ["pause", "pause", "Pause" + many],
     canResume && ["resume", jobs.some((j) => j.state === "failed") ? "retry" : "play", (jobs.some((j) => j.state === "failed") ? "Retry" : "Resume") + many],
     ids.length === 1 && ["reveal", "folder", "Show in folder"],
-    ids.length === 1 && jobs[0].state === "done" && hasArchive(jobs) && ["archive", "archive", "Open archive to extract"],
+    ids.length === 1 && jobs[0].state === "done" && hasArchive(jobs) && ["archive", "zip", "Extract…"],
     "-",
     ["copy-src", "copy", "Copy link" + (ids.length > 1 ? "s" : "")],
     ["copy-direct", "copy", "Copy direct link" + (ids.length > 1 ? "s" : "")],
@@ -1032,16 +1091,18 @@ async function exportLinks() {
 }
 
 // ── toolbar & sidebar ──────────────────────────────────────────────────────
-const TITLES = { all: "All downloads", active: "Downloading", queued: "Queued", paused: "Paused", done: "Completed", failed: "Failed", log: "Activity" };
+const TITLES = { all: "All downloads", active: "Downloading", queued: "Queued", paused: "Paused", done: "Finished", failed: "Failed", log: "Activity" };
 function setFilter(f) {
   state.filter = f;
   $$(".filter").forEach((x) => x.classList.toggle("is-active", x.dataset.filter === f));
   const g = f.startsWith("g:") && groupByKey(f.slice(2));
   $("#viewTitle").textContent = g ? g.name : TITLES[f];
+  if (f === "log") $("#logDot").hidden = true;
   $("#log").dataset.rendered = "";
   renderList(); renderSummary(); renderLog([]);
 }
 $$(".filters > .filter").forEach((b) => b.addEventListener("click", () => setFilter(b.dataset.filter)));
+$("#openLog").addEventListener("click", () => setFilter("log"));
 
 $("#search").addEventListener("input", (e) => { state.query = e.target.value; renderList(); });
 $("#runBtn").addEventListener("click", async () => {
@@ -1055,7 +1116,26 @@ $("#spaceOpen").addEventListener("click", () => invoke("open_folder", { path: st
 $("#diskOpen").addEventListener("click", () => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
 $("#diskResume").addEventListener("click", () => invoke("resume_all").then(poll).catch(toastErr));
 $("#sumOpen").addEventListener("click", () => invoke("open_folder", { path: state.lastFolder || state.settings.outDir }).catch(toastErr));
-$("#openOut").addEventListener("click",() => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
+$("#openOut").addEventListener("click", () => invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
+$("#changeOut").addEventListener("click", () => changeOutDir().catch(toastErr));
+$(".save-to").addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  openMenu(e.clientX, e.clientY, [
+    ["change", "folder", "Change folder…"],
+    ["open", "open", "Open in " + fileManager()],
+  ], (act) => act === "change" ? changeOutDir().catch(toastErr) : invoke("open_folder", { path: state.settings.outDir }).catch(toastErr));
+});
+async function changeOutDir() {
+  const dir = await invoke("pick_folder", { current: state.settings.outDir });
+  if (dir && !samePath(dir, state.settings.outDir)) await setOutDir(dir, true);
+}
+// Jobs keep the folder they were added with, so changing it never moves anything.
+async function setOutDir(dir, say) {
+  state.settings = await invoke("set_settings", { settings: { ...state.settings, outDir: dir } });
+  updateOutLabel();
+  if (say) toast(`New downloads go to ${dir}. Current ones stay where they are.`);
+}
+const samePath = (a, b) => (a || "").replace(/[\\/]+$/, "").toLowerCase() === (b || "").replace(/[\\/]+$/, "").toLowerCase();
 
 // Window controls (undecorated window).
 if (inApp) {
@@ -1074,22 +1154,18 @@ if (inApp) {
 }
 
 // ── theme ──────────────────────────────────────────────────────────────────
-const THEME_ORDER = ["system", "light", "dark"];
-const THEME_ICON = { system: "auto", light: "sun", dark: "moon" };
-const THEME_LABEL = { system: "Appearance: match system", light: "Appearance: light", dark: "Appearance: dark" };
 function applyTheme(t) {
   if (t === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = t;
-  $("#themeBtn").innerHTML = `<svg><use href="#i-${THEME_ICON[t]}"/></svg>`;
-  $("#themeBtn").title = THEME_LABEL[t];
+  $$("#themeSeg button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.theme === t));
   drawTide();
 }
-$("#themeBtn").addEventListener("click", async () => {
-  const next = THEME_ORDER[(THEME_ORDER.indexOf(state.settings.theme) + 1) % 3];
-  state.settings.theme = next;
-  applyTheme(next);
-  state.settings = await invoke("set_settings", { settings: state.settings });
-  toast(THEME_LABEL[next]);
+// Like the system's own appearance switch: it takes effect on click, not on Save.
+$("#themeSeg").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-theme]");
+  if (!b || b.dataset.theme === state.settings.theme) return;
+  applyTheme(b.dataset.theme);
+  state.settings = await invoke("set_settings", { settings: { ...state.settings, theme: b.dataset.theme } });
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawTide);
 
@@ -1116,6 +1192,8 @@ function openAdd(prefill = "") {
   $("#addDir").textContent = addDir;
   $("#addDir").title = addDir;
   $("#addStart").checked = state.settings.autoStart;
+  $("#addDirDefault").checked = false;
+  $("#addDirNote").hidden = true;
   if (prefill) $("#addText").value = ($("#addText").value.trim() ? $("#addText").value.trim() + "\n" : "") + prefill;
   openSheet("#addScrim");
   updatePreview();
@@ -1163,13 +1241,16 @@ $("#openTxt").addEventListener("click", async () => {
   } catch (e) { toastErr(e); }
 });
 $("#addDirBtn").addEventListener("click", async () => {
-  if (!inApp) return;
   const dir = await invoke("pick_folder", { current: addDir });
-  if (dir) { addDir = dir; $("#addDir").textContent = dir; $("#addDir").title = dir; showFree(); }
+  if (!dir) return;
+  addDir = dir; $("#addDir").textContent = dir; $("#addDir").title = dir; showFree();
+  // A folder picked here is for this paste; say so, and offer to keep it.
+  $("#addDirNote").hidden = samePath(dir, state.settings.outDir);
 });
 $("#addSheet").addEventListener("submit", async (e) => {
   e.preventDefault();
   const r = await invoke("add_links", { text: $("#addText").value, outDir: addDir, start: $("#addStart").checked });
+  if (!$("#addDirNote").hidden && $("#addDirDefault").checked) await setOutDir(addDir, false);
   closeSheet("#addScrim");
   $("#addText").value = "";
   const extra = [r.mirrors && `${r.mirrors} mirror link${r.mirrors === 1 ? "" : "s"}`, r.duplicates && `${r.duplicates} already in the list`, r.unsupported && `${r.unsupported} unsupported`].filter(Boolean).join(", ");
@@ -1229,7 +1310,10 @@ function updateOutLabel() {
   // Parent › folder, so the button reads as a place, not as the app's name.
   const parts = p.split(/[\\/]/).filter(Boolean);
   $("#outLabel").textContent = parts.length > 1 ? parts.slice(-2).join(" › ") : parts[0] || p;
-  $("#openOut").title = "Open " + p;
+  $("#changeOut").title = `New downloads go to ${p}
+Click to choose another folder`;
+  $("#openOut").title = "Open in " + fileManager();
+  $("#openOut").setAttribute("aria-label", "Open the download folder in " + fileManager());
 }
 
 // ── keyboard, paste, drop ──────────────────────────────────────────────────
@@ -1256,7 +1340,7 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     moveSelection(e.key, e.shiftKey);
   }
-  if (e.key === "Enter" && state.selected.size === 1) rowAction("reveal", [...state.selected]);
+  if (e.key === "Enter" && state.selected.size === 1) openRow([...state.selected][0]);
 });
 
 function moveSelection(key, extend) {
@@ -1370,6 +1454,7 @@ function mockInvoke(cmd, args = {}) {
   switch (cmd) {
     case "get_settings": return Promise.resolve({ ...m.settings });
     case "set_settings": m.settings = args.settings; return Promise.resolve(args.settings);
+    case "pick_folder": return Promise.resolve("D:\\Games");
     case "platform_info": return Promise.resolve({ mica: false, nativeFrame: false, version: "1.0.0 (preview)", browser: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" });
     case "preview_links": {
       const l = (args.text.match(/https?:\/\/\S+/g) || []);

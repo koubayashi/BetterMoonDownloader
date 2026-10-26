@@ -28,7 +28,8 @@
       <symbol id="i-moon" viewBox="0 0 20 20"><path d="M15.6 12.4A6.2 6.2 0 0 1 7.6 4.4a6.2 6.2 0 1 0 8 8z"/></symbol>
       <symbol id="i-auto" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.2"/><path d="M10 3.8v12.4A6.2 6.2 0 0 0 10 3.8z" fill="currentColor"/></symbol>
       <symbol id="i-globe" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M3.5 10h13M10 3.5c2 2 2.8 4.2 2.8 6.5S12 14.5 10 16.5M10 3.5C8 5.5 7.2 7.7 7.2 10s.8 4.5 2.8 6.5"/></symbol>
-      <symbol id="i-archive" viewBox="0 0 20 20"><rect x="3.5" y="4" width="13" height="3.5" rx="1"/><path d="M4.5 7.5v7.3c0 .7.5 1.2 1.2 1.2h8.6c.7 0 1.2-.5 1.2-1.2V7.5M8.5 10.5h3"/></symbol>
+      <symbol id="i-zip" viewBox="0 0 20 20"><path d="M5.5 3.5h6l3 3v10h-9zM11.5 3.5v3h3M8.5 3.5v1.2M9.8 5.3v1.2M8.5 7.1v1.2M9.8 8.9v1.2"/><rect x="8.3" y="11" width="2.4" height="3" rx=".6"/></symbol>
+      <symbol id="i-open" viewBox="0 0 20 20"><path d="M11.5 4.5h4v4M15.5 4.5l-6 6M9 5.5H5.5v9h9V11"/></symbol>
       <symbol id="i-trash" viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 10h6.6L14 6"/></symbol>
       <symbol id="i-copy" viewBox="0 0 20 20"><rect x="7" y="7" width="9" height="9" rx="1.6"/><path d="M13 7V5.6C13 4.7 12.3 4 11.4 4H5.6C4.7 4 4 4.7 4 5.6v5.8c0 .9.7 1.6 1.6 1.6H7"/></symbol>
       <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
@@ -52,24 +53,24 @@
         <button class="filter" data-filter="active"><svg><use href="#i-down"/></svg><span>Downloading</span><b data-count="active">0</b></button>
         <button class="filter" data-filter="queued"><svg><use href="#i-queue"/></svg><span>Queued</span><b data-count="queued">0</b></button>
         <button class="filter" data-filter="paused"><svg><use href="#i-pause"/></svg><span>Paused</span><b data-count="paused">0</b></button>
-        <button class="filter" data-filter="done"><svg><use href="#i-check"/></svg><span>Completed</span><b data-count="done">0</b></button>
+        <button class="filter" data-filter="done"><svg><use href="#i-check"/></svg><span>Finished</span><b data-count="done">0</b></button>
         <button class="filter" data-filter="failed"><svg><use href="#i-alert"/></svg><span>Failed</span><b data-count="failed">0</b></button>
         <div id="relSection" hidden>
           <div class="filters-sep"></div>
           <div class="side-label">Releases</div>
           <div class="releases" id="releases"></div>
         </div>
-        <div class="filters-sep"></div>
-        <button class="filter" data-filter="log"><svg><use href="#i-log"/></svg><span>Activity</span><b data-count="log"></b></button>
       </nav>
 
       <div class="sidebar-foot">
-        <div class="side-label" id="saveToLabel">Save to</div>
-        <button class="side-btn" id="openOut" title="Open the download folder"><svg><use href="#i-folder"/></svg><span id="outLabel">Downloads</span></button>
-        <div class="side-row">
-          <button class="side-btn" id="openSettings"><svg><use href="#i-gear"/></svg><span>Settings</span></button>
-          <button class="icon-btn" id="themeBtn" title="Appearance"><svg><use href="#i-auto"/></svg></button>
+        <div class="side-label" id="saveToLabel">Save new downloads to</div>
+        <div class="side-row save-to">
+          <button class="side-btn" id="changeOut"><svg><use href="#i-folder"/></svg><span id="outLabel">Downloads</span><em>Change</em></button>
+          <button class="icon-btn" id="openOut"><svg><use href="#i-open"/></svg></button>
         </div>
+        <div class="filters-sep"></div>
+        <button class="filter" data-filter="log" id="openLog"><svg><use href="#i-log"/></svg><span>Activity</span><i class="dot" id="logDot" hidden></i></button>
+        <button class="side-btn" id="openSettings"><svg><use href="#i-gear"/></svg><span>Settings</span></button>
       </div>
     </aside>
 
@@ -178,6 +179,10 @@
         <span class="free" id="addFree"></span>
         <button type="button" class="btn btn-sm" id="addDirBtn">Change…</button>
       </div>
+      <div class="dir-note" id="addDirNote" hidden>
+        <span>Only these links go here.</span>
+        <label class="check"><input type="checkbox" id="addDirDefault"><span>Save future downloads here too</span></label>
+      </div>
       <label class="check"><input type="checkbox" id="addStart" checked><span>Start downloading right away</span></label>
       <footer class="sheet-foot">
         <button type="button" class="btn" id="addCancel">Cancel</button>
@@ -189,7 +194,13 @@
   <!-- Settings sheet -->
   <div class="scrim" id="setScrim" hidden>
     <form class="sheet sheet-wide" id="setSheet" role="dialog" aria-modal="true" aria-labelledby="setTitle" autocomplete="off">
-      <header class="sheet-head"><h2 id="setTitle">Settings</h2></header>
+      <header class="sheet-head"><h2 id="setTitle">Settings</h2>
+        <div class="seg" id="themeSeg" role="group" aria-label="Appearance">
+          <button type="button" data-theme="system" title="Match the system"><svg><use href="#i-auto"/></svg><span>System</span></button>
+          <button type="button" data-theme="light"><svg><use href="#i-sun"/></svg><span>Light</span></button>
+          <button type="button" data-theme="dark"><svg><use href="#i-moon"/></svg><span>Dark</span></button>
+        </div>
+      </header>
       <div class="settings">
         <section>
           <h3>Downloads</h3>
