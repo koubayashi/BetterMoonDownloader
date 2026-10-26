@@ -643,6 +643,7 @@ async function groupAction(act, key) {
       l.length ? copy(l.join("\n"), `${l.length} direct link${l.length === 1 ? "" : "s"} copied`) : toast("No direct links yet");
     } else if (act === "remove") await removeJobs(ids, false);
     else if (act === "remove-delete") await removeJobs(ids, true);
+    else if (act === "remove-partial") await deletePartials(ids);
     else if (act === "only") {
       // Focus the bandwidth: pause every other release, run this one.
       const others = state.jobs.filter((j) => gkey(j) !== key).map((j) => j.id);
@@ -669,7 +670,8 @@ function groupMenu(x, y, key) {
     ["copy-direct", "copy", "Copy direct links"],
     "-",
     ["remove", "x", "Remove release from list"],
-    ["remove-delete", "trash", "Delete from disk…", "danger"],
+    s.done < s.count && ["remove-partial", "trash", "Delete partial files…", "danger"],
+    ["remove-delete", "trash", "Delete all files…", "danger"],
   ], (act) => groupAction(act, key));
 }
 
@@ -764,6 +766,7 @@ async function rowAction(act, ids) {
     else if (act === "reveal") await invoke("reveal", { id: ids[0] });
     else if (act === "remove") await removeJobs(ids, false);
     else if (act === "remove-delete") await removeJobs(ids, true);
+    else if (act === "remove-partial") await deletePartials(ids);
     else if (act === "copy-src") copy((await invoke("source_links", { ids })).join("\n"), "Link copied");
     else if (act === "copy-direct") {
       const l = await invoke("direct_links", { ids });
@@ -777,6 +780,24 @@ async function removeJobs(ids, deleteFiles) {
   if (deleteFiles) return deleteFromDisk(ids);
   await invoke("remove", { ids, deletePartial: false });
   ids.forEach((id) => state.selected.delete(id));
+}
+
+// Only the unfinished ones: their partial files are deleted and they leave the
+// list. Finished files, even in the same release, stay listed and on disk.
+async function deletePartials(ids) {
+  const part = state.jobs.filter((j) => ids.includes(j.id) && j.state !== "done").map((j) => j.id);
+  if (!part.length) return toast("No partial downloads here");
+  const n = part.length === 1 ? "1 unfinished download" : `${part.length} unfinished downloads`;
+  if (inApp) {
+    const ok = await invoke("confirm", {
+      message: `Remove ${n} from the list and delete ${part.length === 1 ? "its partial file" : "their partial files"}? Finished files are kept.`,
+      okLabel: "Delete partial files",
+    });
+    if (!ok) return;
+  }
+  await invoke("remove", { ids: part, deletePartial: true });
+  part.forEach((id) => state.selected.delete(id));
+  toast(`Deleted partial files of ${n}`);
 }
 
 // Finished files go to the Recycle Bin (recoverable); partial downloads are
@@ -823,7 +844,8 @@ $("#list").addEventListener("contextmenu", (e) => {
     ["copy-direct", "copy", "Copy direct link" + (ids.length > 1 ? "s" : "")],
     "-",
     ["remove", "x", "Remove from list" + many, "", "Del"],
-    ["remove-delete", "trash", "Delete from disk…" + many, "danger", "Shift+Del"],
+    jobs.some((j) => j.state !== "done") && ["remove-partial", "trash", "Delete partial files…" + many, "danger"],
+    ["remove-delete", "trash", "Delete all files…" + many, "danger", "Shift+Del"],
   ], (act) => rowAction(act, ids));
 });
 
