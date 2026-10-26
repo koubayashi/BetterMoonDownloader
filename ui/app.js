@@ -1361,10 +1361,11 @@ function mockInvoke(cmd, args = {}) {
       error: i === 33 ? "File not found on datanodes" : null, note: null, hasDirect: stateOf(i) === "done", addedAt: t0 - (3 - batch) * 3600000,
       finishedAt: stateOf(i) === "done" ? t0 - (34 - i) * 120000 : null,
     }));
-    // ?idle previews the "everything is downloaded" state.
+    // ?idle previews the "everything is downloaded" state; ?shot (README screenshots) adds speed history and disk room.
     if (location.search.includes("idle")) jobs.forEach((j) => { j.state = "done"; j.total ||= 1_048_576_000; j.error = null; j.finishedAt ||= t0; });
     jobs.forEach((j) => { j.done =j.state === "done" ? j.total : j.state === "paused" ? j.total * 0.37 : j.state === "downloading" ? j.total * (0.15 + 0.17 * (j.id % 4)) : 0; });
-    return { jobs, history: [], settings: { outDir: "C:\\Users\\you\\Downloads\\BetterMoon", maxActive: 4, connections: 4, maxResolving: 3, retries: 3, browserPages: 3, captchaWait: 240, browserPath: "", dnApiKey: "", proxies: "", mode: "download", stallKiller: true, speedLimitMbs: 0, theme: "system", autoStart: true, releaseFolders: true, builtinBrowser: true } };
+    const history = location.search.includes("shot") ? Array.from({ length: 110 }, (_, i) => 3.2e7 + 6e6 * Math.sin(i / 6) + 3e6 * Math.sin(i / 2.3)) : [];
+    return { jobs, history, settings: { outDir: "C:\\Users\\you\\Downloads\\BetterMoon", maxActive: 4, connections: 4, maxResolving: 3, retries: 3, browserPages: 3, captchaWait: 240, browserPath: "", dnApiKey: "", proxies: "", mode: "download", stallKiller: true, speedLimitMbs: 0, theme: "system", autoStart: true, releaseFolders: true, builtinBrowser: true } };
   })());
   switch (cmd) {
     case "get_settings": return Promise.resolve({ ...m.settings });
@@ -1394,7 +1395,7 @@ function mockInvoke(cmd, args = {}) {
       const unknown = c((j) => !j.total && j.state !== "failed");
       const avg = bytesTotal / known.length;
       return Promise.resolve({
-        jobs: m.jobs.map((j) => ({ ...j })), history: [...m.history], disks: [{ dir: m.settings.outDir, free: 9.4e9 }], attention: [], diskFull: null, browserOpen: false, log: [], logSeq: 0,
+        jobs: m.jobs.map((j) => ({ ...j })), history: [...m.history], disks: [{ dir: m.settings.outDir, free: location.search.includes("shot") ? 9.4e11 : 9.4e9 }], attention: [], diskFull: null, browserOpen: false, log: [], logSeq: 0,
         stats: { count: m.jobs.length, done: c((j) => j.state === "done"), failed: c((j) => j.state === "failed"), active: c((j) => ["downloading", "resolving"].includes(j.state)),
           queued: c((j) => ["queued", "ready"].includes(j.state)), paused: c((j) => j.state === "paused"), bytesDone, bytesTotal, unknownSizes: unknown, speed,
           eta: speed ? (bytesTotal - bytesDone + unknown * avg) / speed : null, etaEstimated: unknown > 0 },

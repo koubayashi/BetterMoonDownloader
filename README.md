@@ -17,6 +17,11 @@
 
 Paste or drop a `.txt` full of share links. BetterMoonDownloader turns each one into its direct download link and downloads it like IDM or FDM would: a persistent queue, several connections per file, resume after restart, retries, and pause/resume per file or per release.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark.png">
+  <img src="assets/screenshot-light.png" alt="BetterMoonDownloader downloading a multi-part release: a summary card with total progress, speed graph and finish time; the release's active parts with per-file speed and time left; queued parts folded into '5 more waiting'; and a finished release in its own section below.">
+</picture>
+
 ## Download
 
 Everything is on the [latest release](https://github.com/koubayashi/BetterMoonDownloader/releases/latest) page.
