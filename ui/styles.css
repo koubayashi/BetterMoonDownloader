@@ -23,6 +23,8 @@
   --done: oklch(0.52 0.12 152);
   --danger: oklch(0.56 0.2 27);
   --danger-soft: oklch(0.56 0.2 27 / 0.1);
+  --warn: oklch(0.55 0.12 65);
+  --warn-soft: oklch(0.78 0.14 80 / 0.2);
   --track: oklch(0.92 0.006 262);
   --scrim: oklch(0.25 0.02 266 / 0.22);
   --shadow: 0 1px 2px oklch(0.2 0.02 266 / 0.06), 0 12px 32px -6px oklch(0.2 0.02 266 / 0.18);
@@ -54,6 +56,8 @@
   --done: oklch(0.74 0.13 152);
   --danger: oklch(0.7 0.17 25);
   --danger-soft: oklch(0.7 0.17 25 / 0.14);
+  --warn: oklch(0.84 0.12 82);
+  --warn-soft: oklch(0.84 0.12 82 / 0.13);
   --track: oklch(0.3 0.012 266);
   --scrim: oklch(0.08 0.01 266 / 0.5);
   --shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 16px 40px -8px oklch(0 0 0 / 0.55);
@@ -81,6 +85,8 @@
     --done: oklch(0.74 0.13 152);
     --danger: oklch(0.7 0.17 25);
     --danger-soft: oklch(0.7 0.17 25 / 0.14);
+    --warn: oklch(0.84 0.12 82);
+    --warn-soft: oklch(0.84 0.12 82 / 0.13);
     --track: oklch(0.3 0.012 266);
     --scrim: oklch(0.08 0.01 266 / 0.5);
     --shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 16px 40px -8px oklch(0 0 0 / 0.55);
@@ -207,7 +213,7 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 
 /* ── Batch summary ───────────────────────────────────────── */
 .summary {
-  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 18px;
+  display: grid; grid-template-columns: auto 1fr; grid-auto-flow: column; grid-auto-columns: auto; align-items: center; gap: 18px;
   margin: 2px 20px 12px; padding: 14px 18px;
   border-radius: var(--r-lg); background: var(--raised);
   box-shadow: 0 0 0 1px var(--line-soft), 0 1px 2px oklch(from var(--ink) l c h / 0.04);
@@ -221,6 +227,8 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .summary-live b { color: var(--accent); font-weight: 600; }
 .summary-live .clock { color: var(--ink); font-weight: 600; }
 .bar-lg { margin-top: 10px; height: 6px; }
+/* Nothing left to do: no bar, no speed chart, just where the files are. */
+.summary.is-idle .tide { display: none; }
 
 .tide { margin: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .tide canvas { width: 240px; height: 64px; display: block; }
@@ -235,6 +243,9 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .banner svg { color: var(--accent); }
 .banner-danger { background: var(--danger-soft); }
 .banner-danger svg { color: var(--danger); }
+/* Before the disk fills: a heads-up, not yet an error. */
+.banner-warn { background: var(--warn-soft); }
+.banner-warn svg { color: var(--warn); }
 
 /* ── List ────────────────────────────────────────────────── */
 .list-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -244,7 +255,7 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
   align-items: center; column-gap: 14px;
 }
 .list-head {
-  height: 28px; padding: 0 20px 0 52px; border-bottom: 1px solid var(--line-soft);
+  height: 30px; padding: 0 20px 2px 52px; border-bottom: 1px solid var(--line-soft);
   font-size: 11.5px; font-weight: 500; color: var(--ink-3); flex: none;
 }
 .list-head .c-size, .list-head .c-speed, .list-head .c-eta { text-align: right; color: var(--ink-3); font-size: 11.5px; }
@@ -318,9 +329,55 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
 .group[data-state="paused"] .bar i, .group[data-state="queued"] .bar i { background: var(--ink-3); }
 .group[data-state="failed"] .bar i { background: var(--danger); }
 .row.in-group { padding-left: 64px; }
-.row.in-group .moon { left: 36px; width: 16px; height: 16px; margin-top: -8px; }
+/* Inside a release the bar says it all; the moon stays on headers and the summary. */
+.row.in-group .moon { display: none; }
 .row.in-group .name { font-weight: 400; }
-.row.in-group + .group { margin-top: 10px; }
+.row.in-group + .group, .fold + .group { margin-top: 10px; }
+
+/* A finished file has nothing left to watch: no bar, a quieter, shorter row. */
+.row[data-state="done"] .bar, .row[data-state="done"] .pct { visibility: hidden; }
+/* Rows that aren't moving (finished, waiting) are shorter, so the live ones stand out. */
+.row.in-group:is([data-state="done"], [data-state="queued"], [data-state="ready"], [data-state="paused"]) { height: 40px; }
+.row.in-group:is([data-state="done"], [data-state="queued"], [data-state="ready"]) .sub { font-size: 11.5px; }
+
+/* "34 finished · 52 GB": the parts already on disk, folded under the live ones. */
+.fold {
+  position: relative; display: flex; align-items: center; gap: 8px; height: 34px; margin: 2px 0;
+  padding: 0 12px 0 64px; border-radius: var(--r); color: var(--ink-2); font-size: 12.5px;
+  transition: background-color .12s ease;
+}
+.fold:hover { background: var(--hover); }
+.fold .chev { position: absolute; left: 36px; top: 50%; width: 14px; height: 14px; margin-top: -7px; color: var(--ink-3); transition: transform .2s var(--ease); }
+.fold.is-open .chev { transform: rotate(90deg); }
+.fold .ok-ic { width: 15px; height: 15px; color: var(--done); }
+.fold[data-kind="wait"] .ok-ic { color: var(--ink-3); }
+.fold-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fold-hint { margin-left: auto; color: var(--ink-3); font-size: 12px; opacity: 0; transition: opacity .12s ease; }
+.fold:hover .fold-hint { opacity: 1; }
+
+/* "In progress" / "Finished": what's moving, then what's on disk. */
+.section { display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 12px; margin-top: 14px; }
+.section:first-child { margin-top: 0; }
+.section h2 { margin: 0; font: 600 12px/1 var(--font); color: var(--ink-2); }
+.section + .group, .section + .row { margin-top: 0; }
+.section-acts { display: flex; gap: 6px; }
+.btn-danger { color: var(--danger); }
+.btn-danger svg { width: 14px; height: 14px; }
+.btn-danger:hover { background: var(--danger-soft); border-color: oklch(from var(--danger) l c h / 0.35); }
+
+/* A finished release is a single quiet line: its bar is always full, so it goes. */
+.group[data-state="done"] { height: 46px; background: transparent; }
+.group[data-state="done"]:hover { background: var(--hover); }
+.group[data-state="done"] .bar, .group[data-state="done"] .pct { visibility: hidden; }
+.group[data-state="done"] .name { font-weight: 500; }
+.group[data-state="done"] + .group[data-state="done"] { margin-top: 2px; }
+
+.release.is-done { opacity: .7; }
+.release.is-done:hover, .release.is-done.is-active { opacity: 1; }
+
+/* Just added: one soft wash so the eye lands on it. */
+.is-new { animation: arrived 1.8s var(--ease); }
+@keyframes arrived { 0%, 30% { background-color: var(--accent-soft); } }
 
 .side-label { font-size: 11.5px; font-weight: 600; color: var(--ink-3); padding: 2px 10px 6px; }
 .releases { display: flex; flex-direction: column; gap: 1px; max-height: 32vh; overflow-y: auto; }
@@ -425,7 +482,20 @@ code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .92em; padd
   position: fixed; left: 50%; bottom: 20px; z-index: 60; transform: translateX(-50%);
   padding: 9px 14px; border-radius: 10px; background: var(--ink); color: var(--surface);
   box-shadow: var(--shadow); font-weight: 500; animation: toast-in .22s var(--ease);
+  display: flex; align-items: center; gap: 14px;
 }
+.toast[hidden] { display: none; }
+.toast-act {
+  border: 0; background: transparent; padding: 2px 4px; margin: -2px -4px -2px 0; border-radius: 4px;
+  color: oklch(from var(--accent) 0.8 c h); font-weight: 600;
+}
+:root[data-theme="dark"] .toast-act { color: oklch(from var(--accent) 0.5 c h); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .toast-act { color: oklch(from var(--accent) 0.5 c h); } }
+.toast-act:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* Free space next to "Save to" in the Add sheet. */
+.free { flex: none; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.free.low { color: var(--warn); font-weight: 600; }
 
 @keyframes fade { from { opacity: 0; } }
 @keyframes fade-out { to { opacity: 0; } }

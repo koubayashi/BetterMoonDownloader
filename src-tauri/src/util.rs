@@ -161,6 +161,41 @@ pub fn release_name(filename: &str) -> String {
     sanitize_filename(if out.is_empty() { filename } else { &out })
 }
 
+/// FitGirl's optional files (`fg-selective-english.bin`, `fg-optional-bonus.bin`)
+/// and the old `setup-fitgirl-01.bin` volumes are named the same in every
+/// release, so the name alone says nothing about which game they belong to.
+pub fn is_companion(filename: &str) -> bool {
+    let n = filename.to_ascii_lowercase();
+    n.starts_with("fg-selective-") || n.starts_with("fg-optional-") || n.starts_with("setup-fitgirl")
+}
+
+/// Releases for one pasted batch, in paste order. A companion file joins the
+/// release listed just before it (FitGirl pages list them after the parts),
+/// or the one after it when it comes first. With no named release at all in
+/// the batch, the companions stay together in one group.
+pub fn batch_release_names(filenames: &[String]) -> Vec<String> {
+    let own: Vec<Option<String>> = filenames
+        .iter()
+        .map(|n| (!is_companion(n)).then(|| release_name(n)))
+        .collect();
+    let mut out = Vec::with_capacity(filenames.len());
+    let mut prev: Option<&String> = None;
+    for (i, g) in own.iter().enumerate() {
+        let name = match g {
+            Some(g) => {
+                prev = Some(g);
+                g.clone()
+            }
+            None => prev
+                .or_else(|| own[i + 1..].iter().flatten().next())
+                .cloned()
+                .unwrap_or_else(|| "FitGirl setup files".to_string()),
+        };
+        out.push(name);
+    }
+    out
+}
+
 /// The Referer each CDN expects for an extracted URL.
 pub fn referer_for(direct: &str) -> &'static str {
     let host = Url::parse(direct)
@@ -220,6 +255,27 @@ mod tests {
         assert_eq!(release_name("Elden_Ring_Deluxe.7z.001"), "Elden Ring Deluxe");
         assert_eq!(release_name("Movie.2024.mkv"), "Movie 2024");
         assert_eq!(release_name("setup-fitgirl-01.bin"), "setup-fitgirl-01");
+    }
+
+    #[test]
+    fn companions_join_their_release() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // One FitGirl page: parts, then the selective language files.
+        let batch = names(&[
+            "ExampleGame_--_fitgirl-repacks.site_--_.part01.rar",
+            "ExampleGame_--_fitgirl-repacks.site_--_.part02.rar",
+            "fg-selective-english.bin",
+            "fg-selective-french.bin",
+            "fg-optional-bonus.bin",
+        ]);
+        assert!(batch_release_names(&batch).iter().all(|g| g == "ExampleGame"));
+        // Two releases in one paste: each keeps its own companions.
+        let two = names(&["fg-selective-german.bin", "Alpha.part1.rar", "fg-selective-german.bin", "Beta.part1.rar", "fg-selective-german.bin"]);
+        assert_eq!(batch_release_names(&two), ["Alpha", "Alpha", "Alpha", "Beta", "Beta"]);
+        // Old-style volumes with nothing else: one group, not one per file.
+        let old = names(&["setup-fitgirl-01.bin", "setup-fitgirl-02.bin", "setup-fitgirl-selective-english.bin"]);
+        let g = batch_release_names(&old);
+        assert!(g.iter().all(|x| x == &g[0]));
     }
 
     #[test]

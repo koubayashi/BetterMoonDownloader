@@ -28,6 +28,7 @@
       <symbol id="i-moon" viewBox="0 0 20 20"><path d="M15.6 12.4A6.2 6.2 0 0 1 7.6 4.4a6.2 6.2 0 1 0 8 8z"/></symbol>
       <symbol id="i-auto" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.2"/><path d="M10 3.8v12.4A6.2 6.2 0 0 0 10 3.8z" fill="currentColor"/></symbol>
       <symbol id="i-globe" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M3.5 10h13M10 3.5c2 2 2.8 4.2 2.8 6.5S12 14.5 10 16.5M10 3.5C8 5.5 7.2 7.7 7.2 10s.8 4.5 2.8 6.5"/></symbol>
+      <symbol id="i-archive" viewBox="0 0 20 20"><rect x="3.5" y="4" width="13" height="3.5" rx="1"/><path d="M4.5 7.5v7.3c0 .7.5 1.2 1.2 1.2h8.6c.7 0 1.2-.5 1.2-1.2V7.5M8.5 10.5h3"/></symbol>
       <symbol id="i-trash" viewBox="0 0 20 20"><path d="M4.5 6h11M8 6V4.5h4V6M6 6l.7 10h6.6L14 6"/></symbol>
       <symbol id="i-copy" viewBox="0 0 20 20"><rect x="7" y="7" width="9" height="9" rx="1.6"/><path d="M13 7V5.6C13 4.7 12.3 4 11.4 4H5.6C4.7 4 4 4.7 4 5.6v5.8c0 .9.7 1.6 1.6 1.6H7"/></symbol>
       <symbol id="i-x" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/></symbol>
@@ -99,6 +100,7 @@
           <p class="summary-line summary-live" id="sumLine2"></p>
           <div class="bar bar-lg" id="sumBar"><i></i></div>
         </div>
+        <button class="btn" id="sumOpen" hidden><svg><use href="#i-folder"/></svg><span>Open folder</span></button>
         <figure class="tide">
           <canvas id="tide" width="240" height="64" aria-label="Download speed over the last two minutes"></canvas>
           <figcaption id="tideCap"></figcaption>
@@ -114,6 +116,11 @@
         <svg><use href="#i-alert"/></svg>
         <p id="noticeText"></p>
         <button class="btn btn-sm" id="noticeDismiss">Dismiss</button>
+      </div>
+      <div class="banner banner-warn" id="spaceWarn" hidden>
+        <svg><use href="#i-alert"/></svg>
+        <p id="spaceText"></p>
+        <button class="btn btn-sm" id="spaceOpen">Open folder</button>
       </div>
       <div class="banner banner-danger" id="diskFull" hidden>
         <svg><use href="#i-alert"/></svg>
@@ -168,6 +175,7 @@
       <div class="field-row">
         <span class="field-label">Save to</span>
         <span class="path" id="addDir"></span>
+        <span class="free" id="addFree"></span>
         <button type="button" class="btn btn-sm" id="addDirBtn">Change…</button>
       </div>
       <label class="check"><input type="checkbox" id="addStart" checked><span>Start downloading right away</span></label>

@@ -242,9 +242,18 @@ pub struct Stats {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Disk {
+    dir: String,
+    free: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     jobs: Vec<JobView>,
     stats: Stats,
+    /// Free space where unfinished files are headed, and in the default folder.
+    disks: Vec<Disk>,
     history: Vec<f64>,
     attention: Vec<String>,
     disk_full: Option<String>,
@@ -262,6 +271,13 @@ pub struct AddResult {
     unsupported: usize,
     mirrors: usize,
     groups: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteResult {
+    trashed: usize,
+    failed: usize,
 }
 
 /// What a pasted text would turn into, before anything is queued.
@@ -286,15 +302,12 @@ pub struct Plan {
 pub fn plan_links(text: &str) -> Plan {
     let links = util::parse_links(text);
     let mut groups: Vec<(PlanGroup, Vec<String>)> = Vec::new();
-    let mut unsupported = 0;
-    for url in &links {
+    let supported: Vec<&String> = links.iter().filter(|u| Host::of(u) != Host::Unsupported).collect();
+    let unsupported = links.len() - supported.len();
+    let names: Vec<String> = supported.iter().map(|u| util::filename_for(u)).collect();
+    let releases = util::batch_release_names(&names);
+    for ((url, name), group) in supported.into_iter().zip(names).zip(releases) {
         let host = Host::of(url);
-        if host == Host::Unsupported {
-            unsupported += 1;
-            continue;
-        }
-        let name = util::filename_for(url);
-        let group = util::release_name(&name);
         let idx = match groups.iter().position(|(g, _)| g.name == group) {
             Some(i) => i,
             None => {
@@ -375,6 +388,38 @@ fn queue_path() -> PathBuf {
 /// Load the queue without ever losing it silently. A file that won't parse
 /// is kept as `queue.corrupt-<time>.json`, and the last good copy
 /// (`queue.json.bak`, written at every start) is used instead.
+/// Lists saved before companion files were grouped with their release have
+/// each `fg-selective-*.bin` as a release of its own. Move the ones with
+/// nothing on disk yet into the release added just before them; files with
+/// data stay where they are. `recs` must be in id order. True if anything moved.
+fn adopt_companions(recs: &mut [JobRecord]) -> bool {
+    let mut moved = false;
+    for i in 0..recs.len() {
+        let r = &recs[i];
+        let alone = util::is_companion(&r.name) && r.group == util::release_name(&r.name);
+        if !alone || r.done > 0 || r.state == State::Done {
+            continue;
+        }
+        let Some(host) = recs[..i].iter().rev().find(|p| p.out_dir == r.out_dir && !util::is_companion(&p.name)) else {
+            continue;
+        };
+        let (group, subfolder) = (host.group.clone(), host.subfolder.clone());
+        let taken = recs.iter().any(|o| o.name == r.name && o.out_dir == r.out_dir && o.subfolder == subfolder);
+        if taken {
+            continue;
+        }
+        // Only follow the release folder if this file was in its own one.
+        let follow = !r.subfolder.is_empty() || subfolder.is_empty();
+        let r = &mut recs[i];
+        r.group = group;
+        if follow {
+            r.subfolder = subfolder;
+        }
+        moved = true;
+    }
+    moved
+}
+
 fn load_queue() -> (Vec<JobRecord>, Option<String>) {
     load_queue_at(&queue_path())
 }
@@ -434,6 +479,13 @@ impl Engine {
             })
             .collect();
         jobs.sort_by_key(|j| j.rec.id);
+        let mut recs: Vec<JobRecord> = jobs.iter().map(|j| j.rec.clone()).collect();
+        let regrouped = adopt_companions(&mut recs);
+        if regrouped {
+            for (j, r) in jobs.iter_mut().zip(recs) {
+                j.rec = r;
+            }
+        }
         let next_id = jobs.iter().map(|j| j.rec.id).max().unwrap_or(0) + 1;
         let clients = build_clients(&s.proxies);
 
@@ -441,7 +493,7 @@ impl Engine {
             inner: Mutex::new(Inner {
                 jobs,
                 next_id,
-                dirty: false,
+                dirty: regrouped,
                 disk_full: None,
                 notice,
                 history: VecDeque::with_capacity(HISTORY_CAP),
@@ -495,6 +547,12 @@ impl Engine {
 
     pub fn add_links(&self, text: &str, out_dir: Option<String>, start: bool) -> AddResult {
         let links = util::parse_links(text);
+        // Decided over the whole paste, so a release's companion files join it.
+        let releases: std::collections::HashMap<String, String> = {
+            let ok: Vec<&String> = links.iter().filter(|u| Host::of(u) != Host::Unsupported).collect();
+            let names: Vec<String> = ok.iter().map(|u| util::filename_for(u)).collect();
+            ok.into_iter().cloned().zip(util::batch_release_names(&names)).collect()
+        };
         let s = self.settings();
         let out = out_dir.filter(|d| !d.trim().is_empty()).unwrap_or(s.out_dir.clone());
         let mut res = AddResult { added: 0, duplicates: 0, unsupported: 0, mirrors: 0, groups: vec![] };
@@ -520,7 +578,7 @@ impl Engine {
                     continue;
                 }
                 let name = util::filename_for(&url);
-                let group = util::release_name(&name);
+                let group = releases.get(&url).cloned().unwrap_or_else(|| util::release_name(&name));
                 let subfolder = if s.release_folders { group.clone() } else { String::new() };
                 if !res.groups.contains(&group) {
                     res.groups.push(group.clone());
@@ -667,6 +725,57 @@ impl Engine {
         self.drop_removed();
     }
 
+    /// Remove jobs from the list and their files from disk. Finished files go
+    /// to the Recycle Bin (Trash on Linux), so a slip can be undone; partial
+    /// downloads are deleted as in `remove(.., true)`. A finished file that
+    /// can't be moved (open in another program) stays in the list.
+    pub fn delete_files(&self, ids: &[u64]) -> DeleteResult {
+        const BIN: &str = if cfg!(windows) { "Recycle Bin" } else { "Trash" };
+        let (finished, unfinished): (Vec<(u64, PathBuf, Option<PathBuf>)>, Vec<u64>) = {
+            let g = self.inner.lock().unwrap();
+            let mut fin = Vec::new();
+            let mut rest = Vec::new();
+            for j in g.jobs.iter().filter(|j| ids.contains(&j.rec.id)) {
+                if j.rec.state == State::Done {
+                    // Only a release folder this app made is a candidate for tidying up.
+                    let folder = (!j.rec.subfolder.is_empty()).then(|| j.rec.folder());
+                    fin.push((j.rec.id, j.rec.dest(), folder));
+                } else {
+                    rest.push(j.rec.id);
+                }
+            }
+            (fin, rest)
+        };
+        let mut res = DeleteResult { trashed: 0, failed: 0 };
+        let mut gone = unfinished;
+        let mut folders = Vec::new();
+        for (id, dest, folder) in finished {
+            // Already gone from disk (deleted by hand): nothing to move.
+            let ok = !dest.exists() || trash::delete(&dest).is_ok();
+            if ok {
+                res.trashed += 1;
+                gone.push(id);
+                folders.extend(folder);
+            } else {
+                res.failed += 1;
+            }
+        }
+        self.remove(&gone, true);
+        folders.sort();
+        folders.dedup();
+        for f in folders {
+            // Fails, harmlessly, unless the folder is now empty.
+            let _ = std::fs::remove_dir(f);
+        }
+        if res.trashed > 0 {
+            self.log("info", format!("Moved {} finished file(s) to the {BIN}", res.trashed));
+        }
+        if res.failed > 0 {
+            self.log("warn", format!("{} file(s) couldn't be moved to the {BIN}; they may be open in another program", res.failed));
+        }
+        res
+    }
+
     pub fn dismiss_notice(&self) {
         self.inner.lock().unwrap().notice = None;
     }
@@ -765,9 +874,23 @@ impl Engine {
             st.eta = Some(remaining as f64 / st.speed);
             st.eta_estimated = unknown_left > 0;
         }
+        // A folder not made yet counts as its nearest existing parent.
+        let mut dirs: Vec<String> =
+            g.jobs.iter().filter(|j| j.rec.state != State::Done).map(|j| j.rec.out_dir.clone()).collect();
+        dirs.push(self.settings().out_dir);
+        dirs.sort();
+        dirs.dedup();
+        let disks = dirs
+            .into_iter()
+            .filter_map(|dir| {
+                let free = PathBuf::from(&dir).ancestors().find(|a| a.is_dir()).and_then(download::free_space)?;
+                Some(Disk { dir, free })
+            })
+            .collect();
         Snapshot {
             jobs,
             stats: st,
+            disks,
             history: g.history.iter().copied().collect(),
             attention: self.attention.list(),
             disk_full: g.disk_full.clone(),
@@ -1216,5 +1339,39 @@ mod tests {
         assert_eq!(p.groups[0].name, "ExampleGame");
         assert_eq!(p.groups[0].files, 4);
         assert_eq!((p.groups[0].fuckingfast, p.groups[0].datanodes), (4, 4));
+    }
+
+    #[test]
+    fn selective_files_stay_with_their_release() {
+        let text = "- https://fuckingfast.co/ffexample001#ExampleGame_--_fitgirl-repacks.site_--_.part01.rar
+- https://fuckingfast.co/ffexample002#ExampleGame_--_fitgirl-repacks.site_--_.part02.rar
+- https://fuckingfast.co/ffexample003#fg-selective-english.bin
+- https://fuckingfast.co/ffexample004#fg-selective-french.bin";
+        let p = super::plan_links(text);
+        assert_eq!(p.groups.len(), 1);
+        assert_eq!((p.groups[0].name.as_str(), p.groups[0].files), ("ExampleGame", 4));
+    }
+
+    #[test]
+    fn saved_lone_companions_rejoin_their_release() {
+        let rec = |id: u64, name: &str, done: u64| {
+            let group = crate::util::release_name(name);
+            serde_json::from_value::<super::JobRecord>(serde_json::json!({
+                "id": id, "url": format!("https://fuckingfast.co/ffexample00{id}#{name}"), "name": name,
+                "host": "fuckingfast", "state": "paused", "total": 0, "done": done, "error": null, "note": null,
+                "direct": null, "outDir": "C:/x", "addedAt": 0, "finishedAt": null,
+                "group": group, "subfolder": group,
+            }))
+            .unwrap()
+        };
+        let mut recs = vec![
+            rec(1, "ExampleGame_--_fitgirl-repacks.site_--_.part01.rar", 5),
+            rec(2, "fg-selective-english.bin", 0),
+            rec(3, "fg-selective-french.bin", 7), // has data on disk: left alone
+        ];
+        assert!(super::adopt_companions(&mut recs));
+        assert_eq!((recs[1].group.as_str(), recs[1].subfolder.as_str()), ("ExampleGame", "ExampleGame"));
+        assert_eq!(recs[2].group, "fg-selective-french");
+        assert!(!super::adopt_companions(&mut recs));
     }
 }
